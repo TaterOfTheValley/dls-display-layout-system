@@ -1,0 +1,2 @@
+C:\WIP\ideas\monitor-layout-switcher\dist\MonitorLayoutSwitcher.pdb
+C:\WIP\ideas\monitor-layout-switcher\dist\MonitorLayoutSwitcher.exe

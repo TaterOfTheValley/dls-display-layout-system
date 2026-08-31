@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "dgSpecHash": "rN3mbfet14M=",
+  "success": true,
+  "projectFilePath": "C:\\WIP\\ideas\\monitor-layout-switcher\\src\\MonitorLayoutSwitcher.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\Sticky\\.nuget\\packages\\microsoft.net.illink.tasks\\8.0.30\\microsoft.net.illink.tasks.8.0.30.nupkg.sha512",
+    "C:\\Users\\Sticky\\.nuget\\packages\\system.text.json\\8.0.5\\system.text.json.8.0.5.nupkg.sha512"
+  ],
+  "logs": []
+}

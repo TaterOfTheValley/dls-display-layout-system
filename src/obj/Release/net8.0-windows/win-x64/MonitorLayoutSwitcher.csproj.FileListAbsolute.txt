@@ -1,0 +1,15 @@
+C:\WIP\ideas\monitor-layout-switcher\src\bin\Release\net8.0-windows\win-x64\MonitorLayoutSwitcher.exe
+C:\WIP\ideas\monitor-layout-switcher\src\bin\Release\net8.0-windows\win-x64\MonitorLayoutSwitcher.deps.json
+C:\WIP\ideas\monitor-layout-switcher\src\bin\Release\net8.0-windows\win-x64\MonitorLayoutSwitcher.runtimeconfig.json
+C:\WIP\ideas\monitor-layout-switcher\src\bin\Release\net8.0-windows\win-x64\MonitorLayoutSwitcher.dll
+C:\WIP\ideas\monitor-layout-switcher\src\bin\Release\net8.0-windows\win-x64\MonitorLayoutSwitcher.pdb
+C:\WIP\ideas\monitor-layout-switcher\src\obj\Release\net8.0-windows\win-x64\MonitorLayoutSwitcher.GeneratedMSBuildEditorConfig.editorconfig
+C:\WIP\ideas\monitor-layout-switcher\src\obj\Release\net8.0-windows\win-x64\MonitorLayoutSwitcher.AssemblyInfoInputs.cache
+C:\WIP\ideas\monitor-layout-switcher\src\obj\Release\net8.0-windows\win-x64\MonitorLayoutSwitcher.AssemblyInfo.cs
+C:\WIP\ideas\monitor-layout-switcher\src\obj\Release\net8.0-windows\win-x64\MonitorLayoutSwitcher.csproj.CoreCompileInputs.cache
+C:\WIP\ideas\monitor-layout-switcher\src\obj\Release\net8.0-windows\win-x64\MonitorLayoutSwitcher.sourcelink.json
+C:\WIP\ideas\monitor-layout-switcher\src\obj\Release\net8.0-windows\win-x64\MonitorLayoutSwitcher.dll
+C:\WIP\ideas\monitor-layout-switcher\src\obj\Release\net8.0-windows\win-x64\refint\MonitorLayoutSwitcher.dll
+C:\WIP\ideas\monitor-layout-switcher\src\obj\Release\net8.0-windows\win-x64\MonitorLayoutSwitcher.pdb
+C:\WIP\ideas\monitor-layout-switcher\src\obj\Release\net8.0-windows\win-x64\MonitorLayoutSwitcher.genruntimeconfig.cache
+C:\WIP\ideas\monitor-layout-switcher\src\obj\Release\net8.0-windows\win-x64\ref\MonitorLayoutSwitcher.dll
