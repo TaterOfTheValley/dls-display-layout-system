@@ -6,8 +6,10 @@ public class ConfigForm : Form
     {
         public DisplayProfile Profile { get; set; } = null!;
         public Panel CardPanel { get; set; } = null!;
-        public Label TitleLabel { get; set; } = null!;
-        public Label SubLabel { get; set; } = null!;
+
+        /// <summary>Whether the desktop currently looks like this layout. Held here
+        /// rather than in a label so a repaint is only needed when it actually flips.</summary>
+        public bool IsLive { get; set; }
     }
 
     private readonly List<DisplayProfile> _profiles;
@@ -42,7 +44,6 @@ public class ConfigForm : Form
     private Label _undoLabel = null!;
     private Label _feedbackLabel = null!;
     private Label _hotkeyHint = null!;
-    private SplitContainer _split = null!;
     private readonly ToolTip _tips = new();
     private readonly System.Windows.Forms.Timer _undoTimer = new() { Interval = 1000 };
     /// <summary>WinForms leaves Panel and FlowLayoutPanel unbuffered, so every child
@@ -62,6 +63,7 @@ public class ConfigForm : Form
     private ComboBox _refreshBox = null!;
     private ComboBox _scaleBox = null!;
     private Panel? _emptyPanel;
+    private Control? _metaBar;
     private Control[]? _editorChrome;
     private List<DisplayInfo> _liveForEmptyState = new();
     private bool _dirty;
@@ -97,30 +99,23 @@ public class ConfigForm : Form
         DoubleBuffered = true;
         KeyPreview = true;
         Text = "Monitor Layout Switcher";
+        Icon = AppIcon.Shared;
         Padding = new Padding(0);
 
-        var header = BuildHeader();
-        var footer = BuildFooter();
-        var undo = BuildUndoBar();
-        _split = new SplitContainer
-        {
-            Dock = DockStyle.Fill,
-            SplitterWidth = Math.Max(4, S(6)),
-            BackColor = UiTheme.Bg,
-            FixedPanel = FixedPanel.Panel1
-        };
-        _split.Panel1.BackColor = UiTheme.Panel;
-        _split.Panel2.BackColor = UiTheme.Panel;
-        _split.Panel1.Padding = new Padding(S(16), S(14), S(12), S(14));
-        _split.Panel2.Padding = new Padding(S(12), S(14), S(16), S(14));
-        _split.Panel1.Controls.Add(BuildSidebar());
-        _split.Panel2.Controls.Add(BuildEditor());
-        Load += (_, _) => ApplySplitterLayout(_split);
-
-        Controls.Add(_split);
-        Controls.Add(undo);
-        Controls.Add(footer);
-        Controls.Add(header);
+        // Docking runs from the highest control index down, so the add order below is
+        // the reverse of the visual order: rail and meta end up at the top, undo and
+        // footer at the bottom, and the editor takes everything left over.
+        //
+        // There is no in-app title bar any more — the window already carries the app
+        // name, and that band was 52px of pure repetition. The vertical layout rail is
+        // gone too: a list of two or three layouts left most of a 290px column empty
+        // while the canvas, the thing you actually manipulate, was squeezed beside it.
+        Controls.Add(BuildEditor());
+        _metaBar = BuildMetaBar();
+        Controls.Add(_metaBar);
+        Controls.Add(BuildLayoutRail());
+        Controls.Add(BuildUndoBar());
+        Controls.Add(BuildFooter());
 
         if (_profiles.Count > 0) _selectedProfile = _profiles[0];
         RebuildProfileCards();
@@ -160,6 +155,57 @@ public class ConfigForm : Form
     // (ApplicationHighDpiMode in the .csproj), Windows sends WM_DPICHANGED whenever
     // that monitor's scale factor changes, or the window moves to a monitor with a
     // different one — this is the only reliable point to redo that one-time math.
+    /// <summary>
+    /// Keyboard control for the editor. A layout switcher is a keyboard tool — the
+    /// whole point is not reaching for the mouse — so the window it is configured in
+    /// should not force you to either.
+    /// </summary>
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        // Ctrl+1..9 jumps straight to a layout, mirroring the global shortcuts.
+        if ((keyData & Keys.Control) == Keys.Control)
+        {
+            var key = keyData & Keys.KeyCode;
+            if (key >= Keys.D1 && key <= Keys.D9)
+            {
+                int index = key - Keys.D1;
+                if (index < _profiles.Count) SelectProfile(_profiles[index]);
+                return true;
+            }
+
+            switch (key)
+            {
+                case Keys.Z when LayoutSafety.CanUndo:
+                    UndoLayout();
+                    return true;
+
+                case Keys.Return:
+                    ApplySelected();
+                    return true;
+
+                case Keys.N:
+                    AddProfileBtn_Click(this, EventArgs.Empty);
+                    return true;
+            }
+        }
+
+        // Escape closes, unless a shortcut is being recorded — there it means "stop
+        // listening", which is what the user will expect first.
+        if (keyData == Keys.Escape)
+        {
+            if (_isCapturingHotkey)
+            {
+                EndHotkeyCapture();
+                return true;
+            }
+
+            Close();
+            return true;
+        }
+
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
     protected override void OnDpiChanged(DpiChangedEventArgs e)
     {
         base.OnDpiChanged(e);
@@ -181,7 +227,6 @@ public class ConfigForm : Form
         // *current* DpiScale, so they only produce the right answer once both of
         // those are already up to date.
         Bounds = e.SuggestedRectangle;
-        ApplySplitterLayout(_split);
         PerformLayout();
         Invalidate(true);
     }
@@ -235,137 +280,6 @@ public class ConfigForm : Form
         (int)Math.Round(padding.Right * ratio),
         (int)Math.Round(padding.Bottom * ratio));
 
-    private void ApplySplitterLayout(SplitContainer split)
-    {
-        int width = split.Width;
-        if (width < S(200)) return;
-
-        int splitter = Math.Max(1, split.SplitterWidth);
-        int panel1Min = Math.Min(S(240), Math.Max(S(160), width / 5));
-        int panel2Min = Math.Min(S(480), Math.Max(S(280), width / 2));
-        if (panel1Min + panel2Min + splitter > width)
-        {
-            panel1Min = Math.Max(S(120), width / 4);
-            panel2Min = Math.Max(S(160), width - panel1Min - splitter);
-        }
-
-        int maxDistance = width - panel2Min - splitter;
-        if (maxDistance < panel1Min) return;
-        split.SplitterDistance = Math.Clamp(S(290), panel1Min, maxDistance);
-        split.Panel1MinSize = panel1Min;
-        split.Panel2MinSize = panel2Min;
-    }
-
-    private Control BuildHeader()
-    {
-        var header = new Panel
-        {
-            Dock = DockStyle.Top,
-            Height = S(52),
-            BackColor = UiTheme.Panel,
-            Padding = new Padding(S(24), S(8), S(20), S(8))
-        };
-        header.Paint += (_, e) =>
-        {
-            using var pen = new Pen(UiTheme.Line);
-            e.Graphics.DrawLine(pen, 0, header.Height - 1, header.Width, header.Height - 1);
-        };
-
-        var title = new Label
-        {
-            Text = "MONITOR LAYOUT SWITCHER",
-            Font = new Font("Segoe UI", 12f * DpiScale, FontStyle.Bold, GraphicsUnit.Pixel),
-            ForeColor = UiTheme.Gold,
-            AutoSize = false,
-            Location = new Point(S(24), S(14)),
-            Size = new Size(S(640), S(26))
-        };
-
-        _identifyAllBtn = UiTheme.MakeButton("Identify", false, DpiScale);
-        _identifyAllBtn.Size = new Size(S(110), S(34));
-        _identifyAllBtn.Click += (_, _) => IdentifyOverlays.ShowAll();
-        _tips.SetToolTip(_identifyAllBtn, "Flash numbers on the physical monitors");
-
-        _refreshBtn = UiTheme.MakeButton("Refresh", false, DpiScale);
-        _refreshBtn.Size = new Size(S(100), S(34));
-        _refreshBtn.Click += (_, _) => RefreshDisplays();
-        _tips.SetToolTip(_refreshBtn, "Re-scan connected monitors");
-
-        header.Resize += (_, _) =>
-        {
-            _identifyAllBtn.Location = new Point(header.Width - _identifyAllBtn.Width - S(20), S(9));
-            _refreshBtn.Location = new Point(_identifyAllBtn.Left - S(8) - _refreshBtn.Width, S(9));
-        };
-
-        header.Controls.Add(title);
-        header.Controls.Add(_identifyAllBtn);
-        header.Controls.Add(_refreshBtn);
-        return header;
-    }
-
-    private Control BuildSidebar()
-    {
-        var root = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.Panel };
-
-        var heading = UiTheme.MakeEyebrow("LAYOUTS", DpiScale);
-        heading.Dock = DockStyle.Top;
-        heading.Height = S(22);
-
-        var buttons = new Panel { Dock = DockStyle.Bottom, Height = S(86), BackColor = UiTheme.Panel };
-        _addProfileBtn = UiTheme.MakeButton("+ Add", false, DpiScale);
-        _duplicateBtn = UiTheme.MakeButton("Duplicate", false, DpiScale);
-        _deleteProfileBtn = UiTheme.MakeButton("Delete", false, DpiScale);
-        // Capturing the live layout is a profile-level action like Add and Duplicate,
-        // so it belongs with them. Sitting in the action bar it read as a sibling of
-        // Apply, which made a destructive overwrite look like a commit button.
-        _captureCurrentLayoutBtn = UiTheme.MakeButton("Capture", false, DpiScale);
-        _captureCurrentLayoutBtn.Click += CaptureCurrentLayoutBtn_Click;
-        _tips.SetToolTip(_captureCurrentLayoutBtn, "Replace this layout with the monitors as they are arranged right now");
-        buttons.Resize += (_, _) =>
-        {
-            int gap = S(8);
-            int w = (buttons.Width - gap) / 2;
-            _addProfileBtn.SetBounds(0, S(4), w, S(34));
-            _duplicateBtn.SetBounds(w + gap, S(4), buttons.Width - w - gap, S(34));
-            _captureCurrentLayoutBtn.SetBounds(0, S(44), w, S(34));
-            _deleteProfileBtn.SetBounds(w + gap, S(44), buttons.Width - w - gap, S(34));
-        };
-        _addProfileBtn.Click += AddProfileBtn_Click;
-        _duplicateBtn.Click += DuplicateProfileBtn_Click;
-        _deleteProfileBtn.Click += DeleteProfileBtn_Click;
-        _tips.SetToolTip(_duplicateBtn, "Copy the selected layout");
-        buttons.Controls.Add(_addProfileBtn);
-        buttons.Controls.Add(_duplicateBtn);
-        buttons.Controls.Add(_deleteProfileBtn);
-        buttons.Controls.Add(_captureCurrentLayoutBtn);
-
-        _profileCardsPanel = new BufferedFlowPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = UiTheme.Bg,
-            AutoScroll = true,
-            FlowDirection = FlowDirection.TopDown,
-            WrapContents = false,
-            Padding = new Padding(S(8), S(8), S(4), S(8)),
-            Margin = new Padding(0, S(8), 0, S(8))
-        };
-        _profileCardsPanel.Resize += (_, _) => SizeProfileCards();
-
-        var spacer = new Panel { Dock = DockStyle.Top, Height = S(8), BackColor = UiTheme.Panel };
-
-        root.Controls.Add(_profileCardsPanel);
-        root.Controls.Add(buttons);
-        root.Controls.Add(spacer);
-        root.Controls.Add(heading);
-        return root;
-    }
-
-    /// <summary>
-    /// First-run state. With no saved layouts the editor is a set of disabled
-    /// controls around an empty canvas, which explains nothing. This draws the
-    /// monitors as they are right now and offers the single action that matters,
-    /// so the app's premise is demonstrated rather than described.
-    /// </summary>
     private Control BuildEmptyState()
     {
         _emptyPanel = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.Panel, Visible = false };
@@ -440,6 +354,7 @@ public class ConfigForm : Form
         }
 
         foreach (var c in _editorChrome) c.Visible = !empty;
+        if (_metaBar != null) _metaBar.Visible = !empty;
         _emptyPanel.Visible = empty;
         if (empty)
         {
@@ -469,8 +384,6 @@ public class ConfigForm : Form
             _feedbackLabel.Text = msg;
         };
 
-        var meta = BuildMetaPanel();
-        var toolbar = BuildCanvasToolbar();
         var inspector = BuildInspector();
 
         _hotkeyHint = new Label
@@ -479,7 +392,7 @@ public class ConfigForm : Form
             Height = S(22),
             ForeColor = UiTheme.Muted,
             Font = new Font("Segoe UI", 8.5f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel),
-            Text = "Click a monitor to select it  ·  Double-click for main  ·  Arrow keys nudge  ·  Scroll to zoom",
+            Text = CanvasHintText,
             TextAlign = ContentAlignment.MiddleLeft
         };
 
@@ -487,125 +400,94 @@ public class ConfigForm : Form
         root.Controls.Add(_canvas);
         root.Controls.Add(_hotkeyHint);
         root.Controls.Add(inspector);
-        root.Controls.Add(toolbar);
-        root.Controls.Add(meta);
+
+        var tools = BuildCanvasTools();
 
         // Everything that only makes sense once a layout exists.
-        _editorChrome = new Control[] { _canvas, _hotkeyHint, inspector, toolbar, meta };
+        _editorChrome = new Control[] { _canvas, _hotkeyHint, inspector, tools };
         return root;
     }
 
-    private Control BuildCanvasToolbar()
+    /// <summary>
+    /// View controls, floated over the canvas instead of occupying a band above it.
+    /// They act on the canvas, so they belong on it — and the canvas gets the whole
+    /// window rather than sharing it with a toolbar that is used once a session.
+    /// </summary>
+    private Control BuildCanvasTools()
     {
-        var bar = new Panel
+        var tools = new BufferedPanel { BackColor = UiTheme.Card, Height = S(38) };
+        tools.Paint += (_, e) =>
         {
-            Dock = DockStyle.Top,
-            Height = S(40),
-            BackColor = UiTheme.Panel
+            using var pen = new Pen(UiTheme.Line);
+            e.Graphics.DrawRectangle(pen, 0, 0, tools.Width - 1, tools.Height - 1);
         };
-        _fitBtn = UiTheme.MakeButton("Fit view", false, DpiScale);
-        _fitBtn.Size = new Size(S(90), S(30));
-        _fitBtn.Location = new Point(0, S(4));
+
+        _fitBtn = UiTheme.MakeButton("Fit", false, DpiScale);
+        _fitBtn.Size = new Size(S(58), S(28));
         _fitBtn.Click += (_, _) => _canvas.FitView();
-        _tips.SetToolTip(_fitBtn, "Fit all monitors in the canvas");
+        _tips.SetToolTip(_fitBtn, "Fit all monitors in view");
+
+        _identifyAllBtn = UiTheme.MakeButton("Identify", false, DpiScale);
+        _identifyAllBtn.Size = new Size(S(84), S(28));
+        _identifyAllBtn.Click += (_, _) => IdentifyOverlays.ShowAll();
+        _tips.SetToolTip(_identifyAllBtn, "Flash numbers on the physical monitors");
+
+        _refreshBtn = UiTheme.MakeButton("Rescan", false, DpiScale);
+        _refreshBtn.Size = new Size(S(78), S(28));
+        _refreshBtn.Click += (_, _) => RefreshDisplays();
+        _tips.SetToolTip(_refreshBtn, "Re-scan connected monitors");
 
         _snapToggle = new CheckBox
         {
-            Text = "Snap edges",
+            Text = "Snap",
             Checked = true,
             ForeColor = UiTheme.Text,
-            Font = new Font("Segoe UI", 9f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel),
+            BackColor = UiTheme.Card,
+            Font = new Font("Segoe UI", 11f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel),
             AutoSize = true,
-            Location = new Point(S(100), S(8)),
             Cursor = Cursors.Hand
         };
         _snapToggle.CheckedChanged += (_, _) => _canvas.SnapEnabled = _snapToggle.Checked;
         _tips.SetToolTip(_snapToggle, "Magnetically align monitor edges while dragging");
 
-        bar.Controls.Add(_fitBtn);
-        bar.Controls.Add(_snapToggle);
-        return bar;
-    }
+        tools.Controls.AddRange(new Control[] { _snapToggle, _fitBtn, _identifyAllBtn, _refreshBtn });
 
-    private Control BuildMetaPanel()
-    {
-        var meta = new Panel
+        void Place()
         {
-            Dock = DockStyle.Top,
-            Height = S(62),
-            BackColor = UiTheme.Panel
-        };
+            int pad = S(5);
+            int gap = S(6);
+            int x = pad;
+            _snapToggle.Location = new Point(x, (tools.Height - Math.Max(S(16), _snapToggle.Height)) / 2);
+            x += Math.Max(S(52), _snapToggle.Width) + gap + S(4);
+            foreach (var b in new[] { _fitBtn, _identifyAllBtn, _refreshBtn })
+            {
+                b.Location = new Point(x, pad);
+                x += b.Width + gap;
+            }
+            tools.Width = x - gap + pad;
+            tools.Location = new Point(Math.Max(0, _canvas.ClientSize.Width - tools.Width - S(16)), S(14));
+            tools.BringToFront();
+        }
 
-        var nameLabel = UiTheme.MakeEyebrow("LAYOUT NAME", DpiScale);
-        nameLabel.Location = new Point(0, 0);
-        nameLabel.Size = new Size(S(280), S(18));
-
-        _nameTextBox = new TextBox
-        {
-            BackColor = UiTheme.Input,
-            ForeColor = Color.White,
-            BorderStyle = BorderStyle.FixedSingle,
-            Font = new Font("Segoe UI", 10f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel)
-        };
-        _nameTextBox.TextChanged += (_, _) =>
-        {
-            if (_selectedProfile == null) return;
-            _selectedProfile.Name = _nameTextBox.Text;
-            UpdateSelectedCardTitle(_nameTextBox.Text);
-            MarkDirty();
-        };
-
-        var hotkeyLabel = UiTheme.MakeEyebrow("GLOBAL SHORTCUT", DpiScale);
-        _hotkeyTextBox = new TextBox
-        {
-            BackColor = UiTheme.Input,
-            ForeColor = UiTheme.Gold,
-            BorderStyle = BorderStyle.FixedSingle,
-            Font = new Font("Consolas", 10.5f * DpiScale, FontStyle.Bold, GraphicsUnit.Pixel),
-            PlaceholderText = "Click and press a shortcut"
-        };
-        _hotkeyTextBox.GotFocus += (_, _) => StartHotkeyCapture();
-        _hotkeyTextBox.KeyDown += HotkeyTextBox_KeyDown;
-
-        _captureHotkeyBtn = UiTheme.MakeButton("Capture", false, DpiScale);
-        _captureHotkeyBtn.Click += (_, _) =>
-        {
-            _hotkeyTextBox.Focus();
-            StartHotkeyCapture();
-        };
-
-        meta.Resize += (_, _) =>
-        {
-            int gap = S(16);
-            int half = Math.Max(S(200), (meta.Width - gap) / 2);
-            nameLabel.SetBounds(0, 0, half - S(8), S(18));
-            _nameTextBox.SetBounds(0, S(22), half - S(8), S(32));
-            hotkeyLabel.SetBounds(half + S(8), 0, meta.Width - half - S(8), S(18));
-            int btnW = S(100);
-            _captureHotkeyBtn.SetBounds(meta.Width - btnW, S(22), btnW, S(32));
-            _hotkeyTextBox.SetBounds(half + S(8), S(22), meta.Width - half - S(16) - btnW, S(32));
-        };
-
-        meta.Controls.Add(nameLabel);
-        meta.Controls.Add(_hotkeyTextBox);
-        meta.Controls.Add(_captureHotkeyBtn);
-        meta.Controls.Add(hotkeyLabel);
-        meta.Controls.Add(_nameTextBox);
-        return meta;
+        _canvas.Resize += (_, _) => Place();
+        _canvas.Controls.Add(tools);
+        Place();
+        return tools;
     }
 
     private Control BuildInspector()
     {
-        var panel = new Panel
+        var panel = new BufferedPanel
         {
             Dock = DockStyle.Bottom,
-            Height = S(122),
-            BackColor = UiTheme.Card
+            Height = S(118),
+            BackColor = UiTheme.Card,
+            Padding = new Padding(S(18), 0, S(18), 0)
         };
         panel.Paint += (_, e) =>
         {
             using var pen = new Pen(UiTheme.Line);
-            e.Graphics.DrawRectangle(pen, 0, 0, panel.Width - 1, panel.Height - 1);
+            e.Graphics.DrawLine(pen, 0, 0, panel.Width, 0);
         };
 
         _inspectorTitle = new Label
@@ -613,16 +495,14 @@ public class ConfigForm : Form
             Font = new Font("Segoe UI", 10.5f * DpiScale, FontStyle.Bold, GraphicsUnit.Pixel),
             ForeColor = UiTheme.Text,
             AutoSize = false,
-            Location = new Point(S(14), S(10)),
-            Size = new Size(S(400), S(24))
+            TextAlign = ContentAlignment.MiddleLeft
         };
         _inspectorSub = new Label
         {
             Font = new Font("Segoe UI", 8.5f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel),
             ForeColor = UiTheme.Muted,
             AutoSize = false,
-            Location = new Point(S(14), S(38)),
-            Size = new Size(S(400), S(20))
+            TextAlign = ContentAlignment.MiddleLeft
         };
 
         _includeToggle = new CheckBox
@@ -656,35 +536,44 @@ public class ConfigForm : Form
         };
 
         var resolutionLabel = UiTheme.MakeEyebrow("RESOLUTION", DpiScale);
-        resolutionLabel.SetBounds(S(14), S(70), S(120), S(16));
+        var refreshLabel = UiTheme.MakeEyebrow("REFRESH", DpiScale);
+        var scaleLabel = UiTheme.MakeEyebrow("SCALE", DpiScale);
 
         _resolutionBox = MakeCombo();
-        _resolutionBox.SetBounds(S(14), S(88), S(190), S(24));
         _resolutionBox.SelectedIndexChanged += (_, _) => ResolutionChanged();
-
-        var refreshLabel = UiTheme.MakeEyebrow("REFRESH", DpiScale);
-        refreshLabel.SetBounds(S(218), S(70), S(120), S(16));
-
         _refreshBox = MakeCombo();
-        _refreshBox.SetBounds(S(218), S(88), S(120), S(24));
         _refreshBox.SelectedIndexChanged += (_, _) => RefreshRateChanged();
-
-        var scaleLabel = UiTheme.MakeEyebrow("SCALE", DpiScale);
-        scaleLabel.SetBounds(S(352), S(70), S(120), S(16));
-
         _scaleBox = MakeCombo();
-        _scaleBox.SetBounds(S(352), S(88), S(150), S(24));
         _scaleBox.SelectedIndexChanged += (_, _) => ScaleChanged();
 
         panel.Resize += (_, _) =>
         {
-            int right = panel.Width - S(14);
-            _identifyOneBtn.Location = new Point(right - _identifyOneBtn.Width, S(22));
-            _primaryBtn.Location = new Point(_identifyOneBtn.Left - S(8) - _primaryBtn.Width, S(22));
-            _includeToggle.Location = new Point(_primaryBtn.Left - S(12) - _includeToggle.Width, S(28));
-            int textW = Math.Max(S(120), _includeToggle.Left - S(28));
-            _inspectorTitle.Width = textW;
-            _inspectorSub.Width = textW;
+            int pad = S(18);
+            int right = panel.Width - pad;
+            int rowY = S(58);
+            int rowH = S(30);
+
+            // Actions, right to left.
+            _identifyOneBtn.SetBounds(right - _identifyOneBtn.Width, rowY, _identifyOneBtn.Width, rowH);
+            _primaryBtn.SetBounds(_identifyOneBtn.Left - S(8) - _primaryBtn.Width, rowY, _primaryBtn.Width, rowH);
+            _includeToggle.Location = new Point(_primaryBtn.Left - S(16) - _includeToggle.Width, rowY + (rowH - _includeToggle.Height) / 2);
+
+            // Mode controls, left to right, filling what is left.
+            int available = Math.Max(S(300), _includeToggle.Left - pad - S(24));
+            int gap = S(10);
+            int boxW = Math.Min(S(210), (available - gap * 2) / 3);
+
+            int x = pad;
+            foreach (var (lbl, box) in new (Control, Control)[]
+                     { (resolutionLabel, _resolutionBox), (refreshLabel, _refreshBox), (scaleLabel, _scaleBox) })
+            {
+                lbl.SetBounds(x, S(38), boxW, S(16));
+                box.SetBounds(x, rowY, boxW, rowH);
+                x += boxW + gap;
+            }
+
+            _inspectorTitle.SetBounds(pad, S(10), Math.Max(S(160), panel.Width / 3), S(22));
+            _inspectorSub.SetBounds(_inspectorTitle.Right + S(14), S(12), Math.Max(S(120), panel.Width - _inspectorTitle.Right - S(32)), S(20));
         };
 
         panel.Controls.Add(_inspectorTitle);
@@ -890,6 +779,153 @@ public class ConfigForm : Form
         return _undoPanel;
     }
 
+    private const string CanvasHintText =
+        "Click a monitor to select it  ·  Double-click for main  ·  Arrow keys nudge  ·  Scroll to zoom  ·  Ctrl+1…9 switch layout  ·  Ctrl+Enter apply";
+
+    private const int RailCardW = 196;
+    private const int RailCardH = 84;
+
+    /// <summary>
+    /// The layout picker, as a horizontal strip of thumbnails.
+    ///
+    /// A layout is a picture — you recognise "the one with just the left screen"
+    /// from its shape long before you read its name — so the card leads with the
+    /// arrangement and the name comes second. Horizontal because layouts are few and
+    /// wide space is cheap, where the old vertical rail spent a fifth of the window
+    /// on two entries and a lot of nothing.
+    /// </summary>
+    private Control BuildLayoutRail()
+    {
+        var rail = new Panel
+        {
+            Dock = DockStyle.Top,
+            Height = S(RailCardH) + S(30),
+            BackColor = UiTheme.Panel,
+            Padding = new Padding(S(18), S(10), S(18), S(10))
+        };
+        rail.Paint += (_, e) =>
+        {
+            using var pen = new Pen(UiTheme.Line);
+            e.Graphics.DrawLine(pen, 0, rail.Height - 1, rail.Width, rail.Height - 1);
+        };
+
+        _profileCardsPanel = new BufferedFlowPanel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = UiTheme.Panel,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false,
+            AutoScroll = true,
+            Padding = new Padding(0)
+        };
+
+        rail.Controls.Add(_profileCardsPanel);
+        return rail;
+    }
+
+    /// <summary>
+    /// Name, shortcut, and the actions that operate on the selected layout. These used
+    /// to be spread across a sidebar button block and a separate two-column form; one
+    /// row keeps everything about "this layout" in a single place.
+    /// </summary>
+    private Control BuildMetaBar()
+    {
+        var bar = new Panel
+        {
+            Dock = DockStyle.Top,
+            Height = S(76),
+            BackColor = UiTheme.Bg,
+            Padding = new Padding(S(18), S(10), S(18), S(10))
+        };
+
+        var nameLabel = UiTheme.MakeEyebrow("LAYOUT NAME", DpiScale);
+        var shortcutLabel = UiTheme.MakeEyebrow("GLOBAL SHORTCUT", DpiScale);
+
+        _nameTextBox = new TextBox
+        {
+            BackColor = UiTheme.Input,
+            ForeColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle,
+            Font = new Font("Segoe UI", 12f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel),
+            PlaceholderText = "Layout name"
+        };
+        _nameTextBox.TextChanged += (_, _) =>
+        {
+            if (_selectedProfile == null) return;
+            _selectedProfile.Name = _nameTextBox.Text;
+            InvalidateProfileCards();
+            MarkDirty();
+        };
+
+        _hotkeyTextBox = new TextBox
+        {
+            BackColor = UiTheme.Input,
+            ForeColor = UiTheme.Gold,
+            BorderStyle = BorderStyle.FixedSingle,
+            Font = new Font("Consolas", 12f * DpiScale, FontStyle.Bold, GraphicsUnit.Pixel),
+            PlaceholderText = "Click, then press a shortcut",
+            TextAlign = HorizontalAlignment.Center
+        };
+        _hotkeyTextBox.GotFocus += (_, _) => StartHotkeyCapture();
+        _hotkeyTextBox.KeyDown += HotkeyTextBox_KeyDown;
+        _captureHotkeyBtn = UiTheme.MakeButton("Record", false, DpiScale);
+        _captureHotkeyBtn.Click += (_, _) => { _hotkeyTextBox.Focus(); StartHotkeyCapture(); };
+        _tips.SetToolTip(_hotkeyTextBox, "Global shortcut that switches to this layout");
+
+        _captureCurrentLayoutBtn = UiTheme.MakeButton("Capture", false, DpiScale);
+        _captureCurrentLayoutBtn.Click += CaptureCurrentLayoutBtn_Click;
+        _tips.SetToolTip(_captureCurrentLayoutBtn, "Replace this layout with the monitors as they are arranged right now");
+
+        _duplicateBtn = UiTheme.MakeButton("Duplicate", false, DpiScale);
+        _duplicateBtn.Click += DuplicateProfileBtn_Click;
+        _tips.SetToolTip(_duplicateBtn, "Copy the selected layout");
+
+        _deleteProfileBtn = UiTheme.MakeButton("Delete", false, DpiScale);
+        _deleteProfileBtn.Click += DeleteProfileBtn_Click;
+
+        // Kept for the empty state, which calls it directly.
+        _addProfileBtn = UiTheme.MakeButton("+ Add", false, DpiScale);
+        _addProfileBtn.Click += AddProfileBtn_Click;
+        _addProfileBtn.Visible = false;
+
+        bar.Resize += (_, _) =>
+        {
+            int y = S(30);
+            int h = S(34);
+            int gap = S(8);
+            int right = bar.Width - S(18);
+
+            foreach (var b in new[] { _deleteProfileBtn, _duplicateBtn, _captureCurrentLayoutBtn })
+            {
+                int w = S(96);
+                right -= w;
+                b.SetBounds(right, y, w, h);
+                right -= gap;
+            }
+
+            int recordW = S(84);
+            int hotkeyW = S(220);
+            right -= S(14);
+            _captureHotkeyBtn.SetBounds(right - recordW, y, recordW, h);
+            _hotkeyTextBox.SetBounds(right - recordW - gap - hotkeyW, y, hotkeyW, h);
+
+            int nameW = Math.Min(S(360), Math.Max(S(160), _hotkeyTextBox.Left - S(38)));
+            _nameTextBox.SetBounds(S(18), y, nameW, h);
+
+            nameLabel.SetBounds(S(18), S(10), nameW, S(16));
+            shortcutLabel.SetBounds(_hotkeyTextBox.Left, S(10), _hotkeyTextBox.Width, S(16));
+        };
+
+        bar.Controls.AddRange(new Control[]
+        {
+            nameLabel, shortcutLabel,
+            _nameTextBox, _hotkeyTextBox, _captureHotkeyBtn,
+            _captureCurrentLayoutBtn, _duplicateBtn, _deleteProfileBtn, _addProfileBtn
+        });
+        return bar;
+    }
+
+    /// <summary>Rebuilds the layout thumbnails.</summary>
     private void RebuildProfileCards()
     {
         _profileCardsPanel.SuspendLayout();
@@ -898,106 +934,123 @@ public class ConfigForm : Form
 
         foreach (var profile in _profiles)
         {
-            bool selected = _selectedProfile?.Id == profile.Id;
+            var p = profile;
             var card = new BufferedPanel
             {
-                Height = S(74),
-                BackColor = selected ? UiTheme.CardActive : UiTheme.Card,
-                Margin = new Padding(0, 0, 0, S(8)),
+                Width = S(RailCardW),
+                Height = S(RailCardH),
+                BackColor = UiTheme.Panel,
+                Margin = new Padding(0, 0, S(10), 0),
                 Cursor = Cursors.Hand,
-                Tag = profile
+                Tag = p
             };
 
-            var p = profile;
-            card.Paint += (_, e) =>
-            {
-                var g = e.Graphics;
-                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                bool isCurSelected = (_selectedProfile?.Id == p.Id);
-                using var pen = new Pen(isCurSelected ? UiTheme.Gold : UiTheme.Line, isCurSelected ? 2 : 1);
-                g.DrawRectangle(pen, 0, 0, card.Width - 1, card.Height - 1);
-                DrawPips(g, p, card.Width);
-            };
+            var view = new ProfileCardView { Profile = p, CardPanel = card };
 
-            var title = new Label
-            {
-                Text = p.Name,
-                Font = new Font("Segoe UI", 10f * DpiScale, FontStyle.Bold, GraphicsUnit.Pixel),
-                ForeColor = selected ? UiTheme.Gold : UiTheme.Text,
-                Location = new Point(S(12), S(10)),
-                Size = new Size(S(200), S(22)),
-                AutoSize = false
-            };
-            var sub = new Label
-            {
-                Text = string.IsNullOrWhiteSpace(p.Hotkey) ? "No shortcut" : p.Hotkey,
-                Font = new Font("Segoe UI", 8.5f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel),
-                ForeColor = UiTheme.Muted,
-                Location = new Point(S(12), S(34)),
-                Size = new Size(S(200), S(18)),
-                AutoSize = false
-            };
+            card.Paint += (_, e) => PaintLayoutCard(e.Graphics, card, view);
+            card.Click += (_, _) => SelectProfile(p);
+            card.MouseEnter += (_, _) => card.Invalidate();
+            card.MouseLeave += (_, _) => card.Invalidate();
 
-            void SelectCard(object? sender, EventArgs e)
-            {
-                if (_selectedProfile?.Id == p.Id) return;
-                _selectedProfile = p;
-                UpdateCardSelectionStyles();
-                LoadSelectedProfile();
-            }
-
-            card.Click += SelectCard;
-            title.Click += SelectCard;
-            sub.Click += SelectCard;
-            card.Controls.Add(title);
-            card.Controls.Add(sub);
-
-            _cardViews.Add(new ProfileCardView
-            {
-                Profile = p,
-                CardPanel = card,
-                TitleLabel = title,
-                SubLabel = sub
-            });
-
+            _cardViews.Add(view);
             _profileCardsPanel.Controls.Add(card);
         }
 
-        SizeProfileCards();
+        var addTile = new BufferedPanel
+        {
+            Width = S(132),
+            Height = S(RailCardH),
+            BackColor = UiTheme.Panel,
+            Margin = new Padding(0),
+            Cursor = Cursors.Hand
+        };
+        addTile.Paint += (_, e) =>
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            bool hot = addTile.ClientRectangle.Contains(addTile.PointToClient(Cursor.Position));
+
+            using var pen = new Pen(hot ? UiTheme.Gold : UiTheme.Line) { DashStyle = System.Drawing.Drawing2D.DashStyle.Dash };
+            g.DrawRectangle(pen, 1, 1, addTile.Width - 3, addTile.Height - 3);
+
+            using var font = new Font("Segoe UI", 12f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel);
+            using var brush = new SolidBrush(hot ? UiTheme.Gold : UiTheme.Muted);
+            using var centre = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+            g.DrawString("+  New layout", font, brush, addTile.ClientRectangle, centre);
+        };
+        addTile.Click += AddProfileBtn_Click;
+        addTile.MouseEnter += (_, _) => addTile.Invalidate();
+        addTile.MouseLeave += (_, _) => addTile.Invalidate();
+        _profileCardsPanel.Controls.Add(addTile);
+
         _profileCardsPanel.ResumeLayout();
         RefreshActiveBadges();
         UpdateEmptyState();
     }
 
-    private void UpdateCardSelectionStyles()
+    private void PaintLayoutCard(Graphics g, Control card, ProfileCardView view)
     {
-        foreach (var view in _cardViews)
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+        bool selected = _selectedProfile?.Id == view.Profile.Id;
+        bool hot = card.ClientRectangle.Contains(card.PointToClient(Cursor.Position));
+
+        var body = new Rectangle(0, 0, card.Width - 1, card.Height - 1);
+        using (var bg = new SolidBrush(selected ? UiTheme.CardActive : hot ? UiTheme.CardHover : UiTheme.Card))
+            g.FillRoundedRectangle(bg, body.X, body.Y, body.Width, body.Height, S(6));
+        using (var pen = new Pen(selected ? UiTheme.Gold : UiTheme.Line, selected ? 2f : 1f))
+            g.DrawRoundedRectangle(pen, body.X, body.Y, body.Width, body.Height, S(6));
+
+        // The arrangement, which is what actually distinguishes one layout from another.
+        LayoutGlyph.Draw(g,
+            new RectangleF(S(12), S(12), S(56), S(34)),
+            view.Profile.Displays,
+            onColor: Color.FromArgb(selected ? 200 : 150, UiTheme.Text),
+            offColor: Color.FromArgb(90, UiTheme.Line),
+            primaryColor: selected ? UiTheme.Gold : UiTheme.GoldDim);
+
+        using var trim = new StringFormat
         {
-            bool isSelected = (_selectedProfile?.Id == view.Profile.Id);
-            view.CardPanel.BackColor = isSelected ? UiTheme.CardActive : UiTheme.Card;
-            view.TitleLabel.ForeColor = isSelected ? UiTheme.Gold : UiTheme.Text;
-            view.CardPanel.Invalidate();
+            Trimming = StringTrimming.EllipsisCharacter,
+            FormatFlags = StringFormatFlags.NoWrap
+        };
+
+        using (var nameFont = new Font("Segoe UI", 13f * DpiScale, FontStyle.Bold, GraphicsUnit.Pixel))
+        using (var ink = new SolidBrush(selected ? UiTheme.Gold : UiTheme.Text))
+        {
+            g.DrawString(view.Profile.Name, nameFont, ink,
+                new RectangleF(S(78), S(12), card.Width - S(90), S(20)), trim);
+        }
+
+        string sub = view.Profile.NeedsRecapture
+            ? "Needs re-capture"
+            : string.IsNullOrWhiteSpace(view.Profile.Hotkey) ? "No shortcut" : view.Profile.Hotkey;
+        using (var subFont = new Font("Segoe UI", 11f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel))
+        using (var subInk = new SolidBrush(view.Profile.NeedsRecapture ? UiTheme.Danger : UiTheme.Muted))
+        {
+            g.DrawString(sub, subFont, subInk,
+                new RectangleF(S(78), S(33), card.Width - S(90), S(18)), trim);
+        }
+
+        if (view.IsLive)
+        {
+            using var liveFont = new Font("Segoe UI", 10f * DpiScale, FontStyle.Bold, GraphicsUnit.Pixel);
+            using var liveInk = new SolidBrush(UiTheme.Gold);
+            g.DrawString("LIVE", liveFont, liveInk, new PointF(S(78), card.Height - S(24)));
         }
     }
 
-    private void UpdateSelectedCardTitle(string title)
+    private void SelectProfile(DisplayProfile p)
     {
-        var view = _cardViews.FirstOrDefault(v => v.Profile.Id == _selectedProfile?.Id);
-        if (view != null)
-        {
-            view.TitleLabel.Text = title;
-            view.CardPanel.Invalidate();
-        }
+        if (_selectedProfile?.Id == p.Id) return;
+        _selectedProfile = p;
+        InvalidateProfileCards();
+        LoadSelectedProfile();
     }
-
     private void UpdateSelectedCardHotkey(string hotkey)
     {
         var view = _cardViews.FirstOrDefault(v => v.Profile.Id == _selectedProfile?.Id);
-        if (view != null)
-        {
-            view.SubLabel.Text = string.IsNullOrWhiteSpace(hotkey) ? "No shortcut" : hotkey;
-            view.CardPanel.Invalidate();
-        }
+        view?.CardPanel.Invalidate();
     }
 
     private void InvalidateProfileCards()
@@ -1005,41 +1058,6 @@ public class ConfigForm : Form
         foreach (var view in _cardViews)
         {
             view.CardPanel.Invalidate();
-        }
-    }
-
-    private void SizeProfileCards()
-    {
-        int w = Math.Max(S(80), _profileCardsPanel.ClientSize.Width - S(16));
-        foreach (var view in _cardViews)
-        {
-            view.CardPanel.Width = w;
-            view.TitleLabel.Width = Math.Max(S(40), w - S(24));
-            view.SubLabel.Width = Math.Max(S(40), w - S(24));
-        }
-    }
-
-    private void DrawPips(Graphics g, DisplayProfile profile, int cardWidth)
-    {
-        var displays = profile.Displays.Where(d => d.Width > 0 && d.Height > 0).OrderBy(d => d.X).ToList();
-        if (displays.Count == 0) return;
-        int pipH = S(10);
-        int gap = S(3);
-        int maxW = S(54);
-        int totalW = Math.Min(maxW, displays.Count * S(14));
-        int x = cardWidth - totalW - S(12);
-        int y = S(52);
-        foreach (var d in displays)
-        {
-            int pw = Math.Max(S(8), totalW / Math.Max(1, displays.Count) - gap);
-            using var brush = new SolidBrush(d.Enabled ? UiTheme.Gold : UiTheme.Line);
-            g.FillRectangle(brush, x, y, pw, pipH);
-            if (d.IsPrimary && d.Enabled)
-            {
-                using var pen = new Pen(UiTheme.GoldHover);
-                g.DrawRectangle(pen, x, y, pw, pipH);
-            }
-            x += pw + gap;
         }
     }
 
@@ -1183,6 +1201,17 @@ public class ConfigForm : Form
         _scaleBox.SelectedIndex = 0;
     }
 
+    /// <summary>Stops listening for a shortcut without recording one.</summary>
+    private void EndHotkeyCapture()
+    {
+        if (!_isCapturingHotkey) return;
+        _isCapturingHotkey = false;
+        _captureHotkeyBtn.Text = "Record";
+        _hotkeyHint.ForeColor = UiTheme.Muted;
+        _hotkeyHint.Text = CanvasHintText;
+        ActiveControl = null;
+    }
+
     private void StartHotkeyCapture()
     {
         _isCapturingHotkey = true;
@@ -1215,7 +1244,7 @@ public class ConfigForm : Form
         _isCapturingHotkey = false;
         _hotkeyHint.Text = $"Captured shortcut: {captured}";
         _hotkeyHint.ForeColor = UiTheme.Ok;
-        _captureHotkeyBtn.Text = "Capture";
+        _captureHotkeyBtn.Text = "Record";
         e.SuppressKeyPress = true;
     }
 
@@ -1415,13 +1444,12 @@ public class ConfigForm : Form
         var live = DisplayEngine.FindMatchingProfile(_profiles);
         foreach (var view in _cardViews)
         {
-            string hotkey = string.IsNullOrWhiteSpace(view.Profile.Hotkey) ? "No shortcut" : view.Profile.Hotkey;
-            string text = live?.Id == view.Profile.Id ? $"{hotkey}  ·  LIVE" : hotkey;
+            bool isLive = live?.Id == view.Profile.Id;
 
-            // Assigning the same text still raises TextChanged and repaints; skipping
-            // the no-op is what stops the card list flickering on every tick.
-            if (view.SubLabel.Text == text) continue;
-            view.SubLabel.Text = text;
+            // Repaint only on an actual change; this runs from a timer, and repainting
+            // every card each tick is what made the list flicker.
+            if (view.IsLive == isLive) continue;
+            view.IsLive = isLive;
             view.CardPanel.Invalidate();
         }
         UpdateWindowTitle();

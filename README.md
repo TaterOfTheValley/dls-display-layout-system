@@ -40,6 +40,25 @@ A typical pair of layouts:
    `Share`.
 3. Give each a hotkey.
 
+## In the editor
+
+Layouts run along the top as thumbnails — a layout is a picture, and you recognise
+the one you want from its shape faster than from its name. Select one and the
+canvas below shows that arrangement; drag monitors to rearrange, drag one off the
+canvas to turn it off.
+
+Edits save themselves. There is no Save button, and the only commit action is
+**Apply layout**, which switches Windows to what you are looking at.
+
+| Key | Does |
+|---|---|
+| `Ctrl` + `1`…`9` | Switch to that layout |
+| `Ctrl` + `Enter` | Apply the selected layout |
+| `Ctrl` + `N` | New layout |
+| `Ctrl` + `Z` | Undo the last switch |
+| `Esc` | Close (or stop recording a shortcut) |
+| Arrow keys | Nudge the selected monitor |
+
 ## The confirmation prompt
 
 After a switch, a prompt appears with a 20-second countdown. **Doing nothing
