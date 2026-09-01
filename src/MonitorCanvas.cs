@@ -192,17 +192,21 @@ internal sealed class MonitorCanvas : Control
         foreach (var cfg in _profile.Displays)
         {
             EnsureSize(cfg);
-            var hw = FindHardware(cfg);
-            if (!numbers.TryGetValue(cfg.MonitorDevicePath, out int num))
-            {
-                num = n++;
-            }
+        }
 
+        foreach (var cfg in _profile.Displays.Where(c => !numbers.ContainsKey(c.MonitorDevicePath))
+                                             .OrderBy(c => c.X).ThenBy(c => c.Y))
+        {
+            numbers[cfg.MonitorDevicePath] = n++;
+        }
+
+        foreach (var cfg in _profile.Displays)
+        {
             _items.Add(new CanvasItem
             {
                 Config = cfg,
-                Number = num,
-                Present = hw != null
+                Number = numbers.TryGetValue(cfg.MonitorDevicePath, out int num) ? num : n++,
+                Present = FindHardware(cfg) != null
             });
         }
     }
@@ -396,7 +400,9 @@ internal sealed class MonitorCanvas : Control
 
         var sf = new StringFormat { Alignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter };
         float numY = r.Y + Math.Max(S(4), r.Height * 0.08f);
-        g.DrawString(item.Number.ToString(), numFont, gold, new RectangleF(r.X, numY, r.Width, numFont.Height + S(2)), sf);
+        string numText = item.Present ? item.Number.ToString() : "—";
+        using var numBrush = new SolidBrush(item.Present ? gold.Color : UiTheme.Muted);
+        g.DrawString(numText, numFont, numBrush, new RectangleF(r.X, numY, r.Width, numFont.Height + S(2)), sf);
 
         // Always the monitor's own name. A "Left"/"Center"/"Right" caption restated
         // what the tile's position on the canvas already shows, while hiding the one
@@ -427,16 +433,14 @@ internal sealed class MonitorCanvas : Control
             g.DrawString(badge, badgeFont, badgeInk, br.X + S(4), br.Y + S(1));
         }
 
-        if (item.Present)
+        // Only the absent case is worth drawing, and in a muted tone rather than the
+        // danger colour: a monitor currently plugged into the other computer is the
+        // situation this app exists for, not a fault. Present monitors say nothing —
+        // "Connected" on nearly every tile was pure noise.
+        if (!item.Present)
         {
-            using var ok = new SolidBrush(Color.FromArgb(160, UiTheme.Ok));
-            using var okFont = new Font("Segoe UI", 7f * DpiScale, FontStyle.Bold, GraphicsUnit.Pixel);
-            g.DrawString("Connected", okFont, ok, new RectangleF(r.X + S(4), r.Bottom - S(16), r.Width - S(8), S(14)), sf);
-        }
-        else
-        {
-            using var warn = new SolidBrush(UiTheme.Danger);
-            using var warnFont = new Font("Segoe UI", 7.5f * DpiScale, FontStyle.Bold, GraphicsUnit.Pixel);
+            using var warn = new SolidBrush(UiTheme.Muted);
+            using var warnFont = new Font("Segoe UI", 7.5f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel);
             g.DrawString("Not connected", warnFont, warn, new RectangleF(r.X + S(4), r.Bottom - S(18), r.Width - S(8), S(16)), sf);
         }
     }

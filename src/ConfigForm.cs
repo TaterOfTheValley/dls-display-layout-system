@@ -28,8 +28,6 @@ public class ConfigForm : Form
     private Button _primaryBtn = null!;
     private Button _identifyOneBtn = null!;
     private Button _captureCurrentLayoutBtn = null!;
-    private Button _testApplyBtn = null!;
-    private Button _saveBtn = null!;
     private Button _cancelBtn = null!;
     private Button _addProfileBtn = null!;
     private Button _deleteProfileBtn = null!;
@@ -37,7 +35,6 @@ public class ConfigForm : Form
     private Button _duplicateBtn = null!;
     private Button _refreshBtn = null!;
     private Button _fitBtn = null!;
-    private Button _saveOnlyBtn = null!;
     private Button _applyBtn = null!;
     private Button _undoBtn = null!;
     private CheckBox _snapToggle = null!;
@@ -49,6 +46,8 @@ public class ConfigForm : Form
     private readonly ToolTip _tips = new();
     private readonly System.Windows.Forms.Timer _undoTimer = new() { Interval = 1000 };
     private bool _dirty;
+    private bool _dirtyNotified;
+    private System.Windows.Forms.Timer? _autoSaveTimer;
     private bool _loading;
 
     public bool HasUnsavedChanges => _dirty;
@@ -242,9 +241,9 @@ public class ConfigForm : Form
         var header = new Panel
         {
             Dock = DockStyle.Top,
-            Height = S(72),
+            Height = S(52),
             BackColor = UiTheme.Panel,
-            Padding = new Padding(S(24), S(12), S(20), S(12))
+            Padding = new Padding(S(24), S(8), S(20), S(8))
         };
         header.Paint += (_, e) =>
         {
@@ -258,17 +257,8 @@ public class ConfigForm : Form
             Font = new Font("Segoe UI", 12f * DpiScale, FontStyle.Bold, GraphicsUnit.Pixel),
             ForeColor = UiTheme.Gold,
             AutoSize = false,
-            Location = new Point(S(24), S(10)),
+            Location = new Point(S(24), S(14)),
             Size = new Size(S(640), S(26))
-        };
-        var subtitle = new Label
-        {
-            Text = "Drag displays to arrange them · Snap edges together · Drop unused monitors off the canvas",
-            Font = new Font("Segoe UI", 8.5f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel),
-            ForeColor = UiTheme.Muted,
-            AutoSize = false,
-            Location = new Point(S(24), S(38)),
-            Size = new Size(S(760), S(22))
         };
 
         _identifyAllBtn = UiTheme.MakeButton("Identify", false, DpiScale);
@@ -283,12 +273,11 @@ public class ConfigForm : Form
 
         header.Resize += (_, _) =>
         {
-            _identifyAllBtn.Location = new Point(header.Width - _identifyAllBtn.Width - S(20), S(18));
-            _refreshBtn.Location = new Point(_identifyAllBtn.Left - S(8) - _refreshBtn.Width, S(18));
+            _identifyAllBtn.Location = new Point(header.Width - _identifyAllBtn.Width - S(20), S(9));
+            _refreshBtn.Location = new Point(_identifyAllBtn.Left - S(8) - _refreshBtn.Width, S(9));
         };
 
         header.Controls.Add(title);
-        header.Controls.Add(subtitle);
         header.Controls.Add(_identifyAllBtn);
         header.Controls.Add(_refreshBtn);
         return header;
@@ -306,13 +295,20 @@ public class ConfigForm : Form
         _addProfileBtn = UiTheme.MakeButton("+ Add", false, DpiScale);
         _duplicateBtn = UiTheme.MakeButton("Duplicate", false, DpiScale);
         _deleteProfileBtn = UiTheme.MakeButton("Delete", false, DpiScale);
+        // Capturing the live layout is a profile-level action like Add and Duplicate,
+        // so it belongs with them. Sitting in the action bar it read as a sibling of
+        // Apply, which made a destructive overwrite look like a commit button.
+        _captureCurrentLayoutBtn = UiTheme.MakeButton("Capture", false, DpiScale);
+        _captureCurrentLayoutBtn.Click += CaptureCurrentLayoutBtn_Click;
+        _tips.SetToolTip(_captureCurrentLayoutBtn, "Replace this layout with the monitors as they are arranged right now");
         buttons.Resize += (_, _) =>
         {
             int gap = S(8);
             int w = (buttons.Width - gap) / 2;
             _addProfileBtn.SetBounds(0, S(4), w, S(34));
             _duplicateBtn.SetBounds(w + gap, S(4), buttons.Width - w - gap, S(34));
-            _deleteProfileBtn.SetBounds(0, S(44), buttons.Width, S(34));
+            _captureCurrentLayoutBtn.SetBounds(0, S(44), w, S(34));
+            _deleteProfileBtn.SetBounds(w + gap, S(44), buttons.Width - w - gap, S(34));
         };
         _addProfileBtn.Click += AddProfileBtn_Click;
         _duplicateBtn.Click += DuplicateProfileBtn_Click;
@@ -321,6 +317,7 @@ public class ConfigForm : Form
         buttons.Controls.Add(_addProfileBtn);
         buttons.Controls.Add(_duplicateBtn);
         buttons.Controls.Add(_deleteProfileBtn);
+        buttons.Controls.Add(_captureCurrentLayoutBtn);
 
         _profileCardsPanel = new FlowLayoutPanel
         {
@@ -364,7 +361,6 @@ public class ConfigForm : Form
         var meta = BuildMetaPanel();
         var toolbar = BuildCanvasToolbar();
         var inspector = BuildInspector();
-        var actions = BuildActions();
 
         _hotkeyHint = new Label
         {
@@ -379,7 +375,6 @@ public class ConfigForm : Form
         root.Controls.Add(_canvas);
         root.Controls.Add(_hotkeyHint);
         root.Controls.Add(inspector);
-        root.Controls.Add(actions);
         root.Controls.Add(toolbar);
         root.Controls.Add(meta);
         return root;
@@ -422,7 +417,7 @@ public class ConfigForm : Form
         var meta = new Panel
         {
             Dock = DockStyle.Top,
-            Height = S(92),
+            Height = S(62),
             BackColor = UiTheme.Panel
         };
 
@@ -564,32 +559,6 @@ public class ConfigForm : Form
         return panel;
     }
 
-    private Control BuildActions()
-    {
-        var panel = new Panel
-        {
-            Dock = DockStyle.Bottom,
-            Height = S(52),
-            BackColor = UiTheme.Panel
-        };
-        _captureCurrentLayoutBtn = UiTheme.MakeButton("Capture current layout", false, DpiScale);
-        _testApplyBtn = UiTheme.MakeButton("Apply this profile", false, DpiScale);
-        _captureCurrentLayoutBtn.Click += CaptureCurrentLayoutBtn_Click;
-        _testApplyBtn.Click += (_, _) => ApplySelected(saveFirst: false);
-        _tips.SetToolTip(_captureCurrentLayoutBtn, "Overwrite this profile with the live Windows layout");
-        _tips.SetToolTip(_testApplyBtn, "Change Windows display settings to this profile");
-        panel.Resize += (_, _) =>
-        {
-            int gap = S(8);
-            int w = (panel.Width - gap) / 2;
-            _captureCurrentLayoutBtn.SetBounds(0, S(8), w, S(36));
-            _testApplyBtn.SetBounds(w + gap, S(8), panel.Width - w - gap, S(36));
-        };
-        panel.Controls.Add(_captureCurrentLayoutBtn);
-        panel.Controls.Add(_testApplyBtn);
-        return panel;
-    }
-
     private Control BuildFooter()
     {
         var footer = new Panel
@@ -617,34 +586,24 @@ public class ConfigForm : Form
         _cancelBtn.Size = new Size(S(100), S(40));
         _cancelBtn.Click += (_, _) => Close();
 
-        _saveOnlyBtn = UiTheme.MakeButton("Save", false, DpiScale);
-        _saveOnlyBtn.Size = new Size(S(90), S(40));
-        _saveOnlyBtn.Click += (_, _) => SaveProfilesOnly();
-        _tips.SetToolTip(_saveOnlyBtn, "Save profiles to disk without changing Windows");
-
-        _applyBtn = UiTheme.MakeButton("Apply", false, DpiScale);
-        _applyBtn.Size = new Size(S(90), S(40));
-        _applyBtn.Click += (_, _) => ApplySelected(saveFirst: false);
-        _tips.SetToolTip(_applyBtn, "Apply this layout to Windows. Undo is available for 20 seconds.");
-
-        _saveBtn = UiTheme.MakeButton("Save & Apply", true, DpiScale);
-        _saveBtn.Size = new Size(S(140), S(40));
-        _saveBtn.Click += (_, _) => ApplySelected(saveFirst: true);
+        // One commit action. Edits persist on their own (see MarkDirty), so there is
+        // nothing left for a Save button to do, and "apply without saving" was a
+        // distinction with no meaning once saving is automatic.
+        _applyBtn = UiTheme.MakeButton("Apply layout", true, DpiScale);
+        _applyBtn.Size = new Size(S(150), S(40));
+        _applyBtn.Click += (_, _) => ApplySelected();
+        _tips.SetToolTip(_applyBtn, "Switch Windows to this layout. It reverts by itself unless you confirm.");
 
         footer.Resize += (_, _) =>
         {
-            _saveBtn.Location = new Point(footer.Width - _saveBtn.Width - S(20), (footer.Height - _saveBtn.Height) / 2);
-            _applyBtn.Location = new Point(_saveBtn.Left - S(8) - _applyBtn.Width, (footer.Height - _applyBtn.Height) / 2);
-            _saveOnlyBtn.Location = new Point(_applyBtn.Left - S(8) - _saveOnlyBtn.Width, (footer.Height - _saveOnlyBtn.Height) / 2);
-            _cancelBtn.Location = new Point(_saveOnlyBtn.Left - S(10) - _cancelBtn.Width, (footer.Height - _cancelBtn.Height) / 2);
+            _applyBtn.Location = new Point(footer.Width - _applyBtn.Width - S(20), (footer.Height - _applyBtn.Height) / 2);
+            _cancelBtn.Location = new Point(_applyBtn.Left - S(10) - _cancelBtn.Width, (footer.Height - _cancelBtn.Height) / 2);
             _feedbackLabel.SetBounds(S(24), 0, Math.Max(S(80), _cancelBtn.Left - S(36)), footer.Height);
         };
 
         footer.Controls.Add(_feedbackLabel);
         footer.Controls.Add(_cancelBtn);
-        footer.Controls.Add(_saveOnlyBtn);
         footer.Controls.Add(_applyBtn);
-        footer.Controls.Add(_saveBtn);
         return footer;
     }
 
@@ -878,7 +837,7 @@ public class ConfigForm : Form
             bool connected = liveDisplays.Any(d =>
                 DisplayEngine.SameHardwareIdentity(d.MonitorDevicePath, sel.MonitorDevicePath));
             string link = connected ? "Connected" : "Not connected";
-            _inspectorSub.Text = $"{sel.DeviceName}  ·  {sel.Width} × {sel.Height}{hz}  ·  {link}" + (sel.IsPrimary ? "  ·  Main" : "");
+            _inspectorSub.Text = $"{sel.Width} × {sel.Height}{hz}  ·  {link}" + (sel.IsPrimary ? "  ·  Main" : "");
             _includeToggle.Enabled = true;
             _includeToggle.Checked = sel.Enabled;
             _primaryBtn.Enabled = sel.Enabled && !sel.IsPrimary;
@@ -994,6 +953,43 @@ public class ConfigForm : Form
         return name;
     }
 
+    private void ScheduleAutoSave()
+    {
+        _autoSaveTimer ??= CreateAutoSaveTimer();
+        _autoSaveTimer.Stop();
+        _autoSaveTimer.Start();
+    }
+
+    private System.Windows.Forms.Timer CreateAutoSaveTimer()
+    {
+        var timer = new System.Windows.Forms.Timer { Interval = 600 };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            FlushAutoSave();
+        };
+        return timer;
+    }
+
+    /// <summary>Writes pending edits immediately. Called on close so nothing is lost
+    /// inside the debounce window.</summary>
+    private void FlushAutoSave()
+    {
+        _autoSaveTimer?.Stop();
+        if (!_dirty) return;
+
+        if (!ProfileManager.TrySaveProfiles(_profiles, out string error))
+        {
+            _feedbackLabel.ForeColor = UiTheme.Danger;
+            _feedbackLabel.Text = error;
+            return;
+        }
+
+        _onSaveCallback?.Invoke();
+        MarkClean();
+        RefreshActiveBadges();
+    }
+
     private void SaveProfilesOnly()
     {
         if (!ProfileManager.TrySaveProfiles(_profiles, out string error))
@@ -1010,50 +1006,25 @@ public class ConfigForm : Form
         RefreshActiveBadges();
     }
 
-    private void ApplySelected(bool saveFirst)
+    private void ApplySelected()
     {
         if (_selectedProfile == null) return;
 
         if (DisplayEngine.MatchesCurrent(_selectedProfile))
         {
-            if (saveFirst)
-            {
-                SaveProfilesOnly();
-            }
-            else
-            {
-                _feedbackLabel.ForeColor = UiTheme.Ok;
-                _feedbackLabel.Text = $"'{_selectedProfile.Name}' is already active.";
-            }
+            _feedbackLabel.ForeColor = UiTheme.Ok;
+            _feedbackLabel.Text = $"'{_selectedProfile.Name}' is already active.";
             return;
         }
 
-        var turningOff = DisplayEngine.MonitorsThatWouldDisable(_selectedProfile);
-        if (turningOff.Count > 0)
-        {
-            var answer = MessageBox.Show(
-                this,
-                "This layout will turn off:\n\n• " + string.Join("\n• ", turningOff) +
-                "\n\nUndo is available for 20 seconds after apply.",
-                "Apply layout?",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning);
-            if (answer != DialogResult.Yes) return;
-        }
+        // Pending edits go to disk before the switch, so what gets applied and what
+        // is stored can never disagree.
+        FlushAutoSave();
 
-        if (saveFirst)
-        {
-            if (!ProfileManager.TrySaveProfiles(_profiles, out string saveError))
-            {
-                _feedbackLabel.ForeColor = UiTheme.Danger;
-                _feedbackLabel.Text = saveError;
-                return;
-            }
-
-            _onSaveCallback?.Invoke();
-            MarkClean();
-        }
-
+        // No "this will turn off X" modal any more. The apply itself now reverts
+        // unless confirmed (KeepLayoutDialog), so a blocking warning beforehand asked
+        // the user to predict a consequence they are about to be shown directly —
+        // two confirmations for one action.
         bool ok = LayoutSafety.Apply(_selectedProfile, interactive: true, out string msg);
         _feedbackLabel.Text = msg;
         _feedbackLabel.ForeColor = ok ? UiTheme.Ok : UiTheme.Danger;
@@ -1083,22 +1054,35 @@ public class ConfigForm : Form
         _feedbackLabel.Text = "Rescanned connected monitors.";
     }
 
+    /// <summary>
+    /// Records an edit and schedules it to disk. Saving is automatic: there is no
+    /// Save button, so an edit the user can see must already be an edit that
+    /// survives closing the window.
+    ///
+    /// Debounced rather than immediate — dragging a monitor raises this on every
+    /// mouse move, and rewriting profiles.json per frame would be pointless churn
+    /// (and would wake the file watcher in TrayContext each time).
+    /// </summary>
     private void MarkDirty()
     {
-        if (_loading || _dirty) return;
+        if (_loading) return;
         _dirty = true;
+        ScheduleAutoSave();
+        if (_dirtyNotified) return;
+        _dirtyNotified = true;
         UpdateWindowTitle();
     }
 
     private void MarkClean()
     {
         _dirty = false;
+        _dirtyNotified = false;
         UpdateWindowTitle();
     }
 
     private void UpdateWindowTitle()
     {
-        string star = _dirty ? " • Unsaved" : "";
+        string star = "";
         var live = DisplayEngine.FindMatchingProfile(_profiles);
         string active = live != null ? $"  —  {live.Name} is active" : "";
         Text = "Monitor Layout Switcher" + star + active;
@@ -1136,59 +1120,9 @@ public class ConfigForm : Form
 
     private void ConfigForm_FormClosing(object? sender, FormClosingEventArgs e)
     {
-        if (!_dirty) return;
-        var answer = MessageBox.Show(
-            this,
-            "Save unsaved profile changes?",
-            "Unsaved changes",
-            MessageBoxButtons.YesNoCancel,
-            MessageBoxIcon.Question);
-        if (answer == DialogResult.Cancel)
-        {
-            e.Cancel = true;
-        }
-        else if (answer == DialogResult.Yes)
-        {
-            if (!ProfileManager.TrySaveProfiles(_profiles, out string error))
-            {
-                MessageBox.Show(this, error, "Could not save profiles", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                e.Cancel = true;
-                return;
-            }
-
-            _onSaveCallback?.Invoke();
-        }
-    }
-
-    protected override void WndProc(ref Message m)
-    {
-        const int wmDisplayChange = 0x007E;
-        if (m.Msg == wmDisplayChange)
-        {
-            BeginInvoke(() =>
-            {
-                _canvas.RefreshHardware();
-                RefreshActiveBadges();
-                UpdateInspector();
-            });
-        }
-        base.WndProc(ref m);
-    }
-
-    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
-    {
-        if (_nameTextBox.Focused || _hotkeyTextBox.Focused) return base.ProcessCmdKey(ref msg, keyData);
-
-        if (keyData == (Keys.Control | Keys.S))
-        {
-            SaveProfilesOnly();
-            return true;
-        }
-        if (keyData == (Keys.Control | Keys.Z) && LayoutSafety.CanUndo)
-        {
-            UndoLayout();
-            return true;
-        }
-        return base.ProcessCmdKey(ref msg, keyData);
+        // Edits are already saved; just make sure nothing is still sitting in the
+        // debounce window. No "save your changes?" prompt — with autosave there is
+        // no unsaved state to ask about.
+        FlushAutoSave();
     }
 }
