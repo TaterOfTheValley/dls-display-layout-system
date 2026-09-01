@@ -7,9 +7,14 @@ public class TrayContext : ApplicationContext
     private readonly NotifyIcon _notifyIcon;
     private readonly ContextMenuStrip _contextMenu;
     private readonly HotkeyManager _hotkeyManager;
+    private readonly FileSystemWatcher _profileWatcher;
+    private readonly System.Windows.Forms.Timer _profileReloadTimer;
     private List<DisplayProfile> _profiles;
     private DisplayProfile? _activeProfile;
     private ConfigForm? _configForm;
+    private bool _profileChangePending;
+    private string _lastHandledProfileSignature = string.Empty;
+    private bool _reloadingProfiles;
 
     public TrayContext()
     {
@@ -34,7 +39,99 @@ public class TrayContext : ApplicationContext
 
         _notifyIcon.DoubleClick += (s, e) => ShowConfigWindow();
 
+        _lastHandledProfileSignature = GetProfileSignature();
+        _profileWatcher = new FileSystemWatcher(AppDomain.CurrentDomain.BaseDirectory, "profiles.json")
+        {
+            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName,
+            EnableRaisingEvents = true
+        };
+        _profileWatcher.Changed += ProfileFileChanged;
+        _profileWatcher.Created += ProfileFileChanged;
+        _profileWatcher.Renamed += ProfileFileChanged;
+
+        _profileReloadTimer = new System.Windows.Forms.Timer { Interval = 400 };
+        _profileReloadTimer.Tick += (_, _) =>
+        {
+            if (!_profileChangePending) return;
+            _profileChangePending = false;
+            ReloadProfilesFromDisk();
+        };
+        _profileReloadTimer.Start();
+
         RefreshMenuAndHotkeys();
+        DetectActiveProfile();
+        LayoutSafety.UndoStateChanged += (_, _) =>
+        {
+            if (_notifyIcon.Visible) BeginInvokeOnUi(RefreshMenuAndHotkeys);
+        };
+        ShowConfigWindow();
+    }
+
+    private void BeginInvokeOnUi(Action action)
+    {
+        var form = _configForm;
+        if (form != null && form.IsHandleCreated && !form.IsDisposed) form.BeginInvoke(action);
+        else action();
+    }
+
+    private void ProfileFileChanged(object? sender, FileSystemEventArgs e)
+    {
+        _profileChangePending = true;
+    }
+
+    private string GetProfileSignature()
+    {
+        try
+        {
+            if (!File.Exists(ProfileManager.ConfigPath)) return string.Empty;
+            var info = new FileInfo(ProfileManager.ConfigPath);
+            return $"{info.LastWriteTimeUtc.Ticks}:{info.Length}";
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private void MarkProfileFileHandled() =>
+        _lastHandledProfileSignature = GetProfileSignature();
+
+    private void ReloadProfilesFromDisk()
+    {
+        if (_reloadingProfiles) return;
+        string signature = GetProfileSignature();
+        if (string.IsNullOrEmpty(signature) || signature == _lastHandledProfileSignature) return;
+
+        _reloadingProfiles = true;
+        var loaded = ProfileManager.LoadProfiles();
+        if (loaded.Count == 0)
+        {
+            _reloadingProfiles = false;
+            return;
+        }
+
+        if (_configForm != null && !_configForm.IsDisposed && _configForm.HasUnsavedChanges)
+        {
+            var answer = MessageBox.Show(
+                "profiles.json changed outside the app. Reload it and discard your unsaved editor changes?",
+                "Profiles changed on disk",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
+            if (answer != DialogResult.Yes)
+            {
+                _lastHandledProfileSignature = signature;
+                _reloadingProfiles = false;
+                return;
+            }
+        }
+
+        _profiles.Clear();
+        _profiles.AddRange(loaded);
+        _configForm?.ReloadProfilesFromDisk(_profiles);
+        _lastHandledProfileSignature = signature;
+        DetectActiveProfile();
+        RefreshMenuAndHotkeys();
+        _reloadingProfiles = false;
     }
 
     private void RefreshMenuAndHotkeys()
@@ -51,16 +148,26 @@ public class TrayContext : ApplicationContext
         _contextMenu.Items.Add(titleItem);
         _contextMenu.Items.Add(new ToolStripSeparator());
 
-        // Profile items
+        // Profile items. Checked state must reflect the actual live layout first —
+        // _activeProfile (the last profile explicitly switched to) is only a
+        // fallback for when the live layout doesn't match any saved profile at all
+        // (e.g. it was changed some other way). Using both independently let a
+        // stale _activeProfile stay checked alongside whichever profile the
+        // display layout had actually already matched, showing two checked items.
+        var liveMatches = _profiles.ToDictionary(p => p.Id, p => DisplayEngine.MatchesCurrent(p));
+        bool anyLive = liveMatches.Values.Any(v => v);
+
         foreach (var profile in _profiles)
         {
+            bool isLive = liveMatches[profile.Id];
             string label = string.IsNullOrWhiteSpace(profile.Hotkey)
                 ? profile.Name
                 : $"{profile.Name}   ({profile.Hotkey})";
+            if (isLive) label += "  •";
 
             var item = new ToolStripMenuItem(label)
             {
-                Checked = (_activeProfile?.Id == profile.Id),
+                Checked = isLive || (!anyLive && _activeProfile?.Id == profile.Id),
                 Font = new Font("Segoe UI", 9f)
             };
 
@@ -80,6 +187,28 @@ public class TrayContext : ApplicationContext
 
         _contextMenu.Items.Add(new ToolStripSeparator());
 
+        var undoItem = new ToolStripMenuItem(LayoutSafety.CanUndo
+            ? $"Undo last layout ({LayoutSafety.RemainingSeconds}s)"
+            : "Undo last layout")
+        {
+            Enabled = LayoutSafety.CanUndo
+        };
+        undoItem.Click += (s, e) =>
+        {
+            bool ok = LayoutSafety.Undo(out string msg);
+            if (ok)
+            {
+                DetectActiveProfile();
+                _notifyIcon.Text = "Monitor Layout Switcher";
+            }
+            else
+            {
+                _notifyIcon.ShowBalloonTip(3000, "Monitor Layout Switcher — Failed", msg, ToolTipIcon.Error);
+            }
+            RefreshMenuAndHotkeys();
+        };
+        _contextMenu.Items.Add(undoItem);
+
         var configItem = new ToolStripMenuItem("Configure Profiles...");
         configItem.Click += (s, e) => ShowConfigWindow();
         _contextMenu.Items.Add(configItem);
@@ -89,7 +218,13 @@ public class TrayContext : ApplicationContext
         {
             var newP = DisplayEngine.CaptureCurrentLayoutAsProfile($"Layout {_profiles.Count + 1}", string.Empty);
             _profiles.Add(newP);
-            ProfileManager.SaveProfiles(_profiles);
+            if (!ProfileManager.TrySaveProfiles(_profiles, out string saveError))
+            {
+                _profiles.Remove(newP);
+                _notifyIcon.ShowBalloonTip(4000, "Monitor Layout Switcher — Failed", saveError, ToolTipIcon.Error);
+                return;
+            }
+            MarkProfileFileHandled();
             RefreshMenuAndHotkeys();
             _notifyIcon.ShowBalloonTip(2000, "Monitor Layout Switcher", $"Captured {newP.Name}", ToolTipIcon.Info);
         };
@@ -104,17 +239,37 @@ public class TrayContext : ApplicationContext
 
     private void SwitchToProfile(DisplayProfile profile)
     {
-        bool success = DisplayEngine.ApplyProfile(profile, out string error);
+        var turningOff = DisplayEngine.MonitorsThatWouldDisable(profile);
+        if (turningOff.Count > 0)
+        {
+            var answer = MessageBox.Show(
+                "This layout will turn off:\n\n• " + string.Join("\n• ", turningOff) +
+                "\n\nUndo is available for 20 seconds after apply.",
+                "Apply layout?",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning);
+            if (answer != DialogResult.Yes) return;
+        }
+
+        bool success = LayoutSafety.Apply(profile, out string error);
         if (success)
         {
             _activeProfile = profile;
             _notifyIcon.Text = $"Monitor Layout: {profile.Name}";
-            _notifyIcon.ShowBalloonTip(1500, "Monitor Layout Switcher", $"Switched to: {profile.Name}", ToolTipIcon.Info);
             RefreshMenuAndHotkeys();
         }
         else
         {
             _notifyIcon.ShowBalloonTip(3000, "Monitor Layout Switcher — Failed", error, ToolTipIcon.Error);
+        }
+    }
+
+    private void DetectActiveProfile()
+    {
+        _activeProfile = DisplayEngine.FindMatchingProfile(_profiles) ?? _activeProfile;
+        if (_activeProfile != null)
+        {
+            _notifyIcon.Text = $"Monitor Layout: {_activeProfile.Name}";
         }
     }
 
@@ -124,8 +279,9 @@ public class TrayContext : ApplicationContext
         {
             _configForm = new ConfigForm(_profiles, () =>
             {
-                _profiles = ProfileManager.LoadProfiles();
+                DetectActiveProfile();
                 RefreshMenuAndHotkeys();
+                MarkProfileFileHandled();
             });
         }
 
@@ -162,6 +318,9 @@ public class TrayContext : ApplicationContext
 
     protected override void ExitThreadCore()
     {
+        _profileReloadTimer.Stop();
+        _profileReloadTimer.Dispose();
+        _profileWatcher.Dispose();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
         _hotkeyManager.Dispose();
@@ -214,7 +373,13 @@ public static class GraphicsExtensions
     private static GraphicsPath GetRoundedRectPath(int x, int y, int width, int height, int radius)
     {
         var path = new GraphicsPath();
-        int d = radius * 2;
+        if (width <= 0 || height <= 0)
+        {
+            path.AddRectangle(new Rectangle(x, y, Math.Max(1, width), Math.Max(1, height)));
+            return path;
+        }
+
+        int d = Math.Max(2, Math.Min(radius * 2, Math.Min(width, height)));
         path.AddArc(x, y, d, d, 180, 90);
         path.AddArc(x + width - d, y, d, d, 270, 90);
         path.AddArc(x + width - d, y + height - d, d, d, 0, 90);

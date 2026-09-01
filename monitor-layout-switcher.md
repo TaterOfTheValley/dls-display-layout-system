@@ -12,6 +12,10 @@ Three monitors are shared across multiple computers. Computer A normally uses al
 
 Switch between predefined monitor-layout profiles with minimal interruption, so the shared monitors can be divided between computers quickly whenever the active setup changes.
 
+## Current hardware state
+
+On the current Computer A setup, only the Dell monitor is physically connected and active. The other saved monitor entries are known layout targets, not currently available displays. Connection indicators must come from live display discovery and remain independent of whether a monitor is enabled in the selected profile.
+
 ## Initial requirements
 
 - Run on Windows 11.
@@ -20,6 +24,8 @@ Switch between predefined monitor-layout profiles with minimal interruption, so 
 - Support assigning different monitors to different computers by changing each computer's active layout.
 - Handle the three-monitor scenario where Computer A changes from all three monitors to the left monitor only.
 - Handle the corresponding state where Computer B uses the center and right monitors.
+- **Display Scaling & High-DPI:** Display scaling (e.g., 150%, 200%, 225% / 216 DPI on modern 4K displays) is a primary ongoing requirement that must continuously be accounted for across all UI layout calculations, control dimensions, font rendering, canvas coordinate transforms, and shelf sizing.
+- **Active Display Filtering:** Strictly detect and display only physically attached, active desktop monitors, filtering out inactive GPU ports and phantom adapter endpoints.
 
 ## Open questions
 

@@ -11,7 +11,8 @@ A native, lightweight Windows 11 system tray utility written in C# (.NET 8 Windo
 - Secondary fallback: `ChangeDisplaySettingsEx` / `EnumDisplayDevices` for GDI position coordinates and attachment flags (`CDS_UPDATEREGISTRY`).
 
 ### 2. Profile Storage
-- JSON configuration file saved at `%APPDATA%\MonitorLayoutSwitcher\profiles.json` (or local next to exe if portable).
+- JSON configuration file saved as `profiles.json` next to the executable for the current portable build.
+- A debounced file watcher reloads external profile edits and prompts before replacing unsaved editor changes.
 - Profile structure:
   - `Id`: string
   - `Name`: string ("Desk / all three", "Share / left only")
@@ -21,10 +22,14 @@ A native, lightweight Windows 11 system tray utility written in C# (.NET 8 Windo
 ### 3. User Interface
 - Lightweight Windows system tray icon (`NotifyIcon`) with dark context menu.
 - Quick tray popover / menu showing current active profile and quick switch commands.
-- Compact Profile Configuration Window:
+- Interactive Canvas & Drag-and-Drop Profile Configuration Window:
+  - Responsive High-DPI scaling (`DeviceDpi / 96f`) across all controls, fonts, and canvas elements.
+  - Strictly filter active desktop monitors (`DISPLAY_DEVICE_ATTACHED_TO_DESKTOP`), discarding inactive adapter ports.
+  - Interactive 2D drag-and-drop monitor placement with magnetic edge snapping.
+  - Visual shelf for unused/disconnected monitors in each profile.
+  - On-screen display identification overlay (`Identify`).
   - Profile list (+ Add, Delete, Rename).
   - Configurable hotkey input with key capture (`RegisterHotKey`).
-  - Physical display checkboxes (Left / Center / Right based on sorted X position).
   - "Capture Current Layout" button to save current running layout into a profile.
   - "Apply Layout" test button.
 

@@ -1,0 +1,94 @@
+[
+  {
+    "Id": "189547476a244c1899b19ef71209ba18",
+    "Name": "Full Array",
+    "Hotkey": "Ctrl \u002B Alt \u002B F1",
+    "Displays": [
+      {
+        "DeviceName": "\\\\.\\DISPLAY1",
+        "MonitorId": "Generic PnP Monitor",
+        "HardwareId": "MONITOR\\PNS0329\\{4d36e96e-e325-11ce-bfc1-08002be10318}\\0000",
+        "RelativePosition": "Right",
+        "Enabled": true,
+        "X": 3840,
+        "Y": 720,
+        "Width": 2560,
+        "Height": 1440,
+        "RefreshRate": 60,
+        "IsPrimary": false
+      },
+      {
+        "DeviceName": "\\\\.\\DISPLAY2",
+        "MonitorId": "Generic PnP Monitor",
+        "HardwareId": "MONITOR\\PXO3200\\{4d36e96e-e325-11ce-bfc1-08002be10318}\\0001",
+        "RelativePosition": "Center",
+        "Enabled": true,
+        "X": 0,
+        "Y": 0,
+        "Width": 3840,
+        "Height": 2160,
+        "RefreshRate": 144,
+        "IsPrimary": true
+      },
+      {
+        "DeviceName": "\\\\.\\DISPLAY3",
+        "MonitorId": "Dell P2723QE (HDMI 2_0)",
+        "HardwareId": "MONITOR\\DELF13D\\{4d36e96e-e325-11ce-bfc1-08002be10318}\\0002",
+        "RelativePosition": "Left",
+        "Enabled": true,
+        "X": -3840,
+        "Y": 0,
+        "Width": 3840,
+        "Height": 2160,
+        "RefreshRate": 59,
+        "IsPrimary": false
+      }
+    ]
+  },
+  {
+    "Id": "f3dbbc413184427d8ebc98a57c77fc58",
+    "Name": "Left Only",
+    "Hotkey": "Ctrl \u002B Alt \u002B 2",
+    "Displays": [
+      {
+        "DeviceName": "\\\\.\\DISPLAY1",
+        "MonitorId": "Generic PnP Monitor",
+        "HardwareId": "MONITOR\\PNS0329\\{4d36e96e-e325-11ce-bfc1-08002be10318}\\0000",
+        "RelativePosition": "Right",
+        "Enabled": false,
+        "X": 3840,
+        "Y": 736,
+        "Width": 2560,
+        "Height": 1440,
+        "RefreshRate": 60,
+        "IsPrimary": false
+      },
+      {
+        "DeviceName": "\\\\.\\DISPLAY2",
+        "MonitorId": "Generic PnP Monitor",
+        "HardwareId": "MONITOR\\PXO3200\\{4d36e96e-e325-11ce-bfc1-08002be10318}\\0001",
+        "RelativePosition": "Center",
+        "Enabled": false,
+        "X": 0,
+        "Y": 0,
+        "Width": 3840,
+        "Height": 2160,
+        "RefreshRate": 144,
+        "IsPrimary": false
+      },
+      {
+        "DeviceName": "\\\\.\\DISPLAY3",
+        "MonitorId": "Dell P2723QE (HDMI 2_0)",
+        "HardwareId": "MONITOR\\DELF13D\\{4d36e96e-e325-11ce-bfc1-08002be10318}\\0002",
+        "RelativePosition": "Left",
+        "Enabled": true,
+        "X": 0,
+        "Y": 0,
+        "Width": 3840,
+        "Height": 2160,
+        "RefreshRate": 59,
+        "IsPrimary": true
+      }
+    ]
+  }
+]
