@@ -135,65 +135,47 @@ internal sealed class MonitorCanvas : Control
         // Clean out dead / 0x0 entries
         _profile.Displays.RemoveAll(d => d.Width <= 0 || d.Height <= 0);
 
+        // Full CCD capture of every connected monitor, fetched once. A monitor the
+        // profile has never seen has to be added with its complete mode detail, not
+        // just its geometry — a target without MonitorDevicePath makes the whole
+        // profile look pre-CCD (NeedsRecapture), and one without the captured target
+        // mode can't be re-enabled at its native mode in a single call.
+        var live = DisplayEngine.CaptureTargets();
+
         foreach (var hw in _hardware)
         {
             var match = FindMatch(hw);
             if (match != null)
             {
                 match.DeviceName = hw.DeviceName;
+                match.MonitorDevicePath = hw.MonitorDevicePath;
+                match.HardwareId = hw.MonitorDevicePath;
                 if (string.IsNullOrWhiteSpace(match.MonitorId)) match.MonitorId = hw.MonitorId;
-                if (string.IsNullOrWhiteSpace(match.HardwareId)) match.HardwareId = hw.HardwareId;
                 if (match.Width <= 0) match.Width = hw.Width;
                 if (match.Height <= 0) match.Height = hw.Height;
                 if (match.RefreshRate <= 0) match.RefreshRate = hw.RefreshRate;
                 continue;
             }
 
-            _profile.Displays.Add(new DisplayTargetConfig
-            {
-                DeviceName = hw.DeviceName,
-                MonitorId = hw.MonitorId,
-                HardwareId = hw.HardwareId,
-                RelativePosition = hw.RelativePosition,
-                Enabled = false,
-                X = hw.X,
-                Y = hw.Y,
-                Width = hw.Width,
-                Height = hw.Height,
-                RefreshRate = hw.RefreshRate,
-                IsPrimary = false
-            });
+            var captured = live.FirstOrDefault(t =>
+                DisplayEngine.SameHardwareIdentity(t.MonitorDevicePath, hw.MonitorDevicePath));
+            if (captured == null) continue;
+
+            var added = captured.Clone();
+            added.RelativePosition = hw.RelativePosition;
+            added.Enabled = false;
+            added.IsPrimary = false;
+            _profile.Displays.Add(added);
         }
     }
 
-    private DisplayTargetConfig? FindMatch(DisplayInfo hw)
-    {
-        if (_profile == null) return null;
-
-        var stable = _profile.Displays.FirstOrDefault(d =>
-            !string.IsNullOrWhiteSpace(d.HardwareId) &&
-            DisplayEngine.SameHardwareIdentity(d.HardwareId, hw.HardwareId));
-        if (stable != null) return stable;
-
-        var byName = _profile.Displays.FirstOrDefault(d =>
-            string.Equals(d.DeviceName, hw.DeviceName, StringComparison.OrdinalIgnoreCase));
-        if (byName != null &&
-            (string.IsNullOrWhiteSpace(byName.MonitorId) ||
-             string.IsNullOrWhiteSpace(hw.MonitorId) ||
-             DisplayEngine.SameMonitorDescription(byName.MonitorId, hw.MonitorId)))
-        {
-            return byName;
-        }
-
-        if (!string.IsNullOrWhiteSpace(hw.MonitorId))
-        {
-            var descriptionMatches = _profile.Displays.Where(d =>
-                DisplayEngine.SameMonitorDescription(d.MonitorId, hw.MonitorId)).ToList();
-            if (descriptionMatches.Count == 1) return descriptionMatches[0];
-        }
-
-        return null;
-    }
+    // Matching is a single whole-string compare on the CCD device path. The old
+    // DISPLAYn and monitor-description fallbacks are gone: DISPLAYn renumbers on
+    // every enable/disable this app performs, and the description is identical for
+    // identical monitors, so both could only ever bind a target to the wrong panel.
+    private DisplayTargetConfig? FindMatch(DisplayInfo hw) =>
+        _profile?.Displays.FirstOrDefault(d =>
+            DisplayEngine.SameHardwareIdentity(d.MonitorDevicePath, hw.MonitorDevicePath));
 
     private void RebuildItems()
     {
@@ -204,14 +186,14 @@ internal sealed class MonitorCanvas : Control
         int n = 1;
         foreach (var hw in _hardware.OrderBy(h => h.X).ThenBy(h => h.Y))
         {
-            numbers[hw.DeviceName] = n++;
+            numbers[hw.MonitorDevicePath] = n++;
         }
 
         foreach (var cfg in _profile.Displays)
         {
             EnsureSize(cfg);
             var hw = FindHardware(cfg);
-            if (!numbers.TryGetValue(cfg.DeviceName, out int num))
+            if (!numbers.TryGetValue(cfg.MonitorDevicePath, out int num))
             {
                 num = n++;
             }
@@ -234,31 +216,9 @@ internal sealed class MonitorCanvas : Control
         if (cfg.RefreshRate <= 0) cfg.RefreshRate = hw?.RefreshRate ?? 60;
     }
 
-    private DisplayInfo? FindHardware(DisplayTargetConfig cfg)
-    {
-        var stable = !string.IsNullOrWhiteSpace(cfg.HardwareId)
-            ? _hardware.FirstOrDefault(h => DisplayEngine.SameHardwareIdentity(h.HardwareId, cfg.HardwareId))
-            : null;
-        if (stable != null) return stable;
-
-        var byName = _hardware.FirstOrDefault(h => string.Equals(h.DeviceName, cfg.DeviceName, StringComparison.OrdinalIgnoreCase));
-        if (byName != null &&
-            (string.IsNullOrWhiteSpace(cfg.MonitorId) ||
-             string.IsNullOrWhiteSpace(byName.MonitorId) ||
-             DisplayEngine.SameMonitorDescription(cfg.MonitorId, byName.MonitorId)))
-        {
-            return byName;
-        }
-
-        if (!string.IsNullOrWhiteSpace(cfg.MonitorId))
-        {
-            var descriptionMatches = _hardware.Where(h =>
-                DisplayEngine.SameMonitorDescription(h.MonitorId, cfg.MonitorId)).ToList();
-            if (descriptionMatches.Count == 1) return descriptionMatches[0];
-        }
-
-        return null;
-    }
+    private DisplayInfo? FindHardware(DisplayTargetConfig cfg) =>
+        _hardware.FirstOrDefault(h =>
+            DisplayEngine.SameHardwareIdentity(h.MonitorDevicePath, cfg.MonitorDevicePath));
 
 
     private void RecalcLayout()
@@ -438,9 +398,10 @@ internal sealed class MonitorCanvas : Control
         float numY = r.Y + Math.Max(S(4), r.Height * 0.08f);
         g.DrawString(item.Number.ToString(), numFont, gold, new RectangleF(r.X, numY, r.Width, numFont.Height + S(2)), sf);
 
-        string title = enabled
-            ? (string.IsNullOrWhiteSpace(item.Config.RelativePosition) ? ShortName(item) : item.Config.RelativePosition)
-            : ShortName(item);
+        // Always the monitor's own name. A "Left"/"Center"/"Right" caption restated
+        // what the tile's position on the canvas already shows, while hiding the one
+        // thing the canvas can't: which physical monitor this actually is.
+        string title = ShortName(item);
         float titleY = numY + numFont.Height;
         if (titleY + S(16) < r.Bottom - S(4))
         {
@@ -1005,7 +966,7 @@ internal static class IdentifyOverlays
         public IdentifyForm(int number, DisplayInfo display)
         {
             _number = number;
-            _caption = string.IsNullOrWhiteSpace(display.RelativePosition) ? display.DeviceName : display.RelativePosition;
+            _caption = string.IsNullOrWhiteSpace(display.MonitorId) ? display.DeviceName : display.MonitorId;
             _dpiScale = display.Width >= 3840 ? 2.0f : (display.Width >= 2560 ? 1.5f : 1.0f);
 
             FormBorderStyle = FormBorderStyle.None;

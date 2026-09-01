@@ -29,6 +29,21 @@ public class TrayContext : ApplicationContext
             Renderer = new DarkMenuRenderer()
         };
 
+        // The check margin is laid out from ImageScalingSize. Left at its 16x16
+        // default it stays put while the DPI-scaled item grows around it, which is
+        // what pushed the tick out past the left edge of the menu.
+        _contextMenu.Opening += (s, e) =>
+        {
+            RefreshMenuAndHotkeys();
+
+            int dpi = _contextMenu.DeviceDpi <= 0 ? 96 : _contextMenu.DeviceDpi;
+            int glyph = Math.Max(16, (int)Math.Round(16 * dpi / 96.0));
+            if (_contextMenu.ImageScalingSize.Width != glyph)
+            {
+                _contextMenu.ImageScalingSize = new Size(glyph, glyph);
+            }
+        };
+
         _notifyIcon = new NotifyIcon
         {
             Icon = CreateMonitorIcon(),
@@ -60,6 +75,12 @@ public class TrayContext : ApplicationContext
 
         RefreshMenuAndHotkeys();
         DetectActiveProfile();
+
+        // The layout can change without this app doing it — Windows display settings,
+        // a monitor plugged or unplugged, a driver event. Without this the tray shows
+        // a checkmark against a profile that is no longer live.
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+
         LayoutSafety.UndoStateChanged += (_, _) =>
         {
             if (_notifyIcon.Visible) BeginInvokeOnUi(RefreshMenuAndHotkeys);
@@ -142,7 +163,9 @@ public class TrayContext : ApplicationContext
         var titleItem = new ToolStripMenuItem("Monitor Layout Switcher")
         {
             Enabled = false,
-            Font = new Font("Segoe UI", 9f, FontStyle.Bold),
+            // Derived from the menu's own font rather than a fixed point size, so it
+            // follows the per-monitor DPI the menu was actually opened on.
+            Font = new Font(_contextMenu.Font, FontStyle.Bold),
             ForeColor = Color.FromArgb(232, 189, 99)
         };
         _contextMenu.Items.Add(titleItem);
@@ -154,8 +177,16 @@ public class TrayContext : ApplicationContext
         // (e.g. it was changed some other way). Using both independently let a
         // stale _activeProfile stay checked alongside whichever profile the
         // display layout had actually already matched, showing two checked items.
-        var liveMatches = _profiles.ToDictionary(p => p.Id, p => DisplayEngine.MatchesCurrent(p));
+        // One display query for the whole menu, not one per profile.
+        var liveDisplays = DisplayEngine.GetCurrentDisplays();
+        var liveMatches = _profiles.ToDictionary(p => p.Id, p => DisplayEngine.MatchesCurrent(p, liveDisplays));
         bool anyLive = liveMatches.Values.Any(v => v);
+
+        if (_profiles.Count == 0)
+        {
+            _contextMenu.Items.Add(new ToolStripMenuItem("No layouts saved yet") { Enabled = false });
+            _contextMenu.Items.Add(new ToolStripMenuItem("Capture your current layout to get started") { Enabled = false });
+        }
 
         foreach (var profile in _profiles)
         {
@@ -167,8 +198,7 @@ public class TrayContext : ApplicationContext
 
             var item = new ToolStripMenuItem(label)
             {
-                Checked = isLive || (!anyLive && _activeProfile?.Id == profile.Id),
-                Font = new Font("Segoe UI", 9f)
+                Checked = isLive || (!anyLive && _activeProfile?.Id == profile.Id)
             };
 
             var p = profile;
@@ -251,7 +281,7 @@ public class TrayContext : ApplicationContext
             if (answer != DialogResult.Yes) return;
         }
 
-        bool success = LayoutSafety.Apply(profile, out string error);
+        bool success = LayoutSafety.Apply(profile, interactive: true, out string error);
         if (success)
         {
             _activeProfile = profile;
@@ -316,8 +346,26 @@ public class TrayContext : ApplicationContext
         return Icon.FromHandle(bmp.GetHicon());
     }
 
+    /// <summary>
+    /// Re-reads the live layout after an external display change. Read-only — it
+    /// never applies anything, so it cannot feed back into the change it is
+    /// reacting to.
+    /// </summary>
+    private void OnDisplaySettingsChanged(object? sender, EventArgs e)
+    {
+        BeginInvokeOnUi(() =>
+        {
+            RefreshMenuAndHotkeys();
+            DetectActiveProfile();
+        });
+    }
+
     protected override void ExitThreadCore()
     {
+        // SystemEvents holds a static, process-lifetime subscriber list; leaving this
+        // attached keeps the whole TrayContext alive after exit.
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+
         _profileReloadTimer.Stop();
         _profileReloadTimer.Dispose();
         _profileWatcher.Dispose();
@@ -335,6 +383,47 @@ public class TrayContext : ApplicationContext
         {
             e.TextColor = e.Item.Selected ? Color.Black : Color.FromArgb(248, 240, 221);
             base.OnRenderItemText(e);
+        }
+
+        /// <summary>
+        /// Draws the checkmark as vector art centred in the image margin, instead of
+        /// letting the stock renderer blit a fixed-size glyph at a position it
+        /// computed before DPI scaling was applied. That mismatch is what made the
+        /// tick sit slightly outside the menu at scaling above 100%.
+        /// </summary>
+        protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e)
+        {
+            Rectangle r = e.ImageRectangle;
+            if (r.Width <= 0 || r.Height <= 0) return;
+
+            // Square, centred, and inset — never wider than the margin it sits in.
+            int size = Math.Max(8, (int)Math.Round(Math.Min(r.Width, r.Height) * 0.72));
+            var box = new Rectangle(
+                r.X + (r.Width - size) / 2,
+                r.Y + (r.Height - size) / 2,
+                size,
+                size);
+
+            var g = e.Graphics;
+            var oldMode = g.SmoothingMode;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+            Color tick = e.Item.Selected ? Color.Black : Color.FromArgb(232, 189, 99);
+            using var pen = new Pen(tick, Math.Max(1.6f, size * 0.16f))
+            {
+                StartCap = System.Drawing.Drawing2D.LineCap.Round,
+                EndCap = System.Drawing.Drawing2D.LineCap.Round,
+                LineJoin = System.Drawing.Drawing2D.LineJoin.Round
+            };
+
+            g.DrawLines(pen, new[]
+            {
+                new PointF(box.Left + size * 0.18f, box.Top + size * 0.52f),
+                new PointF(box.Left + size * 0.42f, box.Top + size * 0.76f),
+                new PointF(box.Left + size * 0.84f, box.Top + size * 0.24f)
+            });
+
+            g.SmoothingMode = oldMode;
         }
     }
 
