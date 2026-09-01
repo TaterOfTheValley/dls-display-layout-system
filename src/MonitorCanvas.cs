@@ -16,6 +16,12 @@ internal sealed class MonitorCanvas : Control
         /// layout itself has no opinion about them.</summary>
         public DisplayInfo? Live { get; set; }
         public Rectangle DrawRect;
+
+        /// <summary>Where this tile is actually painted while a transition is running.
+        /// DrawRect stays the true target, so hit-testing and dragging never have to
+        /// know an animation is happening.</summary>
+        public Rectangle FromRect;
+        public bool HasFrom;
         public bool Hovered;
     }
 
@@ -58,13 +64,37 @@ internal sealed class MonitorCanvas : Control
                  ControlStyles.Selectable, true);
         BackColor = UiTheme.Input;
         TabStop = true;
+
+        _anim.Tick += (_, _) =>
+        {
+            if ((DateTime.UtcNow - _animStart).TotalMilliseconds >= AnimMs)
+            {
+                _animating = false;
+                _anim.Stop();
+                foreach (var item in _items) item.HasFrom = false;
+            }
+            Invalidate();
+        };
     }
 
-    private int ShelfHeight => Math.Max(S(96), S(ShelfHeightDesign));
+    /// <summary>
+    /// Zero when every monitor is already in the layout. The shelf only means
+    /// something while there is something on it, and a permanently reserved band was
+    /// taking a fifth of the canvas to say "empty".
+    /// </summary>
+    private int ShelfHeight =>
+        _items.Any(i => !i.Config.Enabled) || _dragFromShelf || _drag != null
+            ? Math.Max(S(96), S(ShelfHeightDesign))
+            : 0;
     private int Pad => Math.Max(S(16), S(18));
 
     public void Bind(DisplayProfile? profile)
     {
+        bool hadItems = _items.Count > 0;
+        if (hadItems) CaptureFromRects();
+        var previous = _items.ToDictionary(i => i.Config.MonitorDevicePath ?? string.Empty, i => i.FromRect,
+            StringComparer.OrdinalIgnoreCase);
+
         _profile = profile;
         _hardware = DisplayEngine.GetCurrentDisplays();
         MergeHardware();
@@ -72,6 +102,23 @@ internal sealed class MonitorCanvas : Control
         _selected = _items.FirstOrDefault(i => i.Config.Enabled) ?? _items.FirstOrDefault();
         _viewFrozen = false;
         RecalcLayout();
+
+        // The items are rebuilt on every bind, so carry the old positions across by
+        // monitor identity — the same panel keeps moving rather than vanishing and
+        // reappearing somewhere else.
+        if (hadItems)
+        {
+            foreach (var item in _items)
+            {
+                if (previous.TryGetValue(item.Config.MonitorDevicePath ?? string.Empty, out var from))
+                {
+                    item.FromRect = from;
+                    item.HasFrom = true;
+                }
+            }
+            BeginTransition();
+        }
+
         Invalidate();
         SelectionChanged?.Invoke(this, EventArgs.Empty);
     }
@@ -81,8 +128,23 @@ internal sealed class MonitorCanvas : Control
     /// and re-entering the inspector update from here would loop.</summary>
     public void RefreshLayoutGeometry()
     {
+        CaptureFromRects();
+        var previous = _items.ToDictionary(i => i.Config.MonitorDevicePath ?? string.Empty, i => i.FromRect,
+            StringComparer.OrdinalIgnoreCase);
+
         RebuildItems();
         RecalcLayout();
+
+        foreach (var item in _items)
+        {
+            if (previous.TryGetValue(item.Config.MonitorDevicePath ?? string.Empty, out var from))
+            {
+                item.FromRect = from;
+                item.HasFrom = true;
+            }
+        }
+
+        BeginTransition();
         Invalidate();
     }
 
@@ -191,6 +253,74 @@ internal sealed class MonitorCanvas : Control
     private DisplayTargetConfig? FindMatch(DisplayInfo hw) =>
         _profile?.Displays.FirstOrDefault(d =>
             DisplayEngine.SameHardwareIdentity(d.MonitorDevicePath, hw.MonitorDevicePath));
+
+    // ---------------------------------------------------------------- transitions
+
+    private readonly System.Windows.Forms.Timer _anim = new() { Interval = 15 };
+    private DateTime _animStart;
+    private bool _animating;
+    private const int AnimMs = 220;
+
+    /// <summary>
+    /// Eases the tiles from where they were to where they now belong.
+    ///
+    /// This is the cheapest thing in the app that makes it feel considered, and it
+    /// also does real work: switching layouts snaps three monitors to new places at
+    /// once, and watching them move tells you what changed far better than noticing
+    /// that the picture is different.
+    /// </summary>
+    private void BeginTransition()
+    {
+        bool any = false;
+        foreach (var item in _items)
+        {
+            if (!item.HasFrom || item.FromRect == item.DrawRect) continue;
+            any = true;
+            break;
+        }
+
+        if (!any)
+        {
+            _animating = false;
+            _anim.Stop();
+            return;
+        }
+
+        _animStart = DateTime.UtcNow;
+        _animating = true;
+        _anim.Start();
+    }
+
+    private void CaptureFromRects()
+    {
+        foreach (var item in _items)
+        {
+            item.FromRect = Painted(item);
+            item.HasFrom = true;
+        }
+    }
+
+    /// <summary>Where a tile is drawn right now, easing between FromRect and DrawRect
+    /// while a transition runs.</summary>
+    private Rectangle Painted(CanvasItem item)
+    {
+        if (!_animating || !item.HasFrom) return item.DrawRect;
+
+        float t = (float)((DateTime.UtcNow - _animStart).TotalMilliseconds / AnimMs);
+        if (t >= 1f) return item.DrawRect;
+        t = Math.Max(0f, t);
+
+        // Ease-out cubic: quick to start, settling gently — motion that reads as
+        // physical rather than mechanical.
+        float e = 1f - (float)Math.Pow(1 - t, 3);
+
+        static int Lerp(int a, int b, float k) => a + (int)Math.Round((b - a) * k);
+        return new Rectangle(
+            Lerp(item.FromRect.X, item.DrawRect.X, e),
+            Lerp(item.FromRect.Y, item.DrawRect.Y, e),
+            Lerp(item.FromRect.Width, item.DrawRect.Width, e),
+            Lerp(item.FromRect.Height, item.DrawRect.Height, e));
+    }
 
     private void RebuildItems()
     {
@@ -345,7 +475,7 @@ internal sealed class MonitorCanvas : Control
     private void DrawGrid(Graphics g, int shelfTop)
     {
         int step = Math.Max(S(16), S(22));
-        using var brush = new SolidBrush(Color.FromArgb(28, UiTheme.Gold));
+        using var brush = new SolidBrush(Color.FromArgb(40, UiTheme.Gold));
         for (int x = step / 2; x < Width; x += step)
         {
             for (int y = step / 2; y < shelfTop; y += step)
@@ -368,7 +498,7 @@ internal sealed class MonitorCanvas : Control
     {
         foreach (var item in _items.Where(i => i.Config.Enabled).OrderBy(i => ReferenceEquals(i, _selected) ? 1 : 0))
         {
-            DrawMonitorCard(g, item, item.DrawRect, true);
+            DrawMonitorCard(g, item, Painted(item), true);
         }
     }
 
@@ -376,7 +506,7 @@ internal sealed class MonitorCanvas : Control
     {
         foreach (var item in _items.Where(i => !i.Config.Enabled))
         {
-            DrawMonitorCard(g, item, item.DrawRect, false);
+            DrawMonitorCard(g, item, Painted(item), false);
         }
     }
 
@@ -387,52 +517,67 @@ internal sealed class MonitorCanvas : Control
         int radius = Math.Max(S(6), S(8));
 
         Color fill = selected ? UiTheme.CardActive : item.Hovered ? UiTheme.CardHover : UiTheme.Card;
-        if (!enabled) fill = Color.FromArgb(enabled ? 255 : 200, fill);
 
-        using (var brush = new SolidBrush(fill))
+        // A soft halo instead of a thicker border. Weight makes a shape look heavy;
+        // light makes it look raised, which is what "selected" should feel like.
+        if (selected)
         {
-            g.FillRoundedRectangle(brush, r.X, r.Y, r.Width, r.Height, radius);
+            for (int i = 3; i >= 1; i--)
+            {
+                using var glow = new Pen(Color.FromArgb(16 * i, UiTheme.Gold), i * 2f);
+                g.DrawRoundedRectangle(glow, r.X - i * 2, r.Y - i * 2,
+                    r.Width + i * 4 - 1, r.Height + i * 4 - 1, radius + i * 2);
+            }
+        }
+
+        // A vertical gradient reads as a lit surface; a flat fill reads as a box. The
+        // difference is a few argb values and it is most of what makes these look like
+        // screens rather than rectangles.
+        using (var path = RoundedPath(r, radius))
+        using (var brush = new System.Drawing.Drawing2D.LinearGradientBrush(
+                   new Rectangle(r.X, r.Y, Math.Max(1, r.Width), Math.Max(1, r.Height)),
+                   Lighten(fill, enabled ? 0.10f : 0.04f),
+                   Darken(fill, enabled ? 0.05f : 0.02f),
+                   System.Drawing.Drawing2D.LinearGradientMode.Vertical))
+        {
+            g.FillPath(brush, path);
+        }
+
+        // The inside of the top edge catches the light.
+        using (var sheen = new Pen(Color.FromArgb(enabled ? 26 : 12, 255, 255, 255)))
+        {
+            g.DrawLine(sheen, r.X + radius, r.Y + 1, r.Right - radius, r.Y + 1);
         }
 
         Color border = selected ? UiTheme.Gold : item.Hovered ? UiTheme.GoldDim : UiTheme.Line;
-        using (var pen = new Pen(border, selected ? 2.2f : 1f))
+        using (var pen = new Pen(border, selected ? 2f : 1f))
         {
             g.DrawRoundedRectangle(pen, r.X, r.Y, r.Width - 1, r.Height - 1, radius);
         }
 
-        if (enabled)
-        {
-            int standW = Math.Max(S(16), r.Width / 3);
-            int standH = Math.Max(S(3), S(4));
-            using var stand = new SolidBrush(Color.FromArgb(selected ? 180 : 90, UiTheme.Gold));
-            g.FillRectangle(stand, r.X + (r.Width - standW) / 2, r.Bottom - 1, standW, standH);
-        }
+        if (enabled) DrawStand(g, r, selected);
 
-        using var gold = new SolidBrush(enabled ? UiTheme.Gold : UiTheme.Muted);
+        // --- Content, as one block centred in the panel. Pinned to the top it looked
+        // like a caption that had run out of room; centred it looks placed.
+        float numSize = Math.Clamp(r.Height * 0.20f, S(15), S(46));
+        float nameSize = Math.Clamp(r.Height * 0.085f, S(10), S(17));
+        float subSize = Math.Clamp(r.Height * 0.062f, S(9), S(13));
+
+        using var numFont = new Font("Segoe UI", numSize, FontStyle.Bold, GraphicsUnit.Pixel);
+        using var nameFont = new Font("Segoe UI", nameSize, FontStyle.Bold, GraphicsUnit.Pixel);
+        using var subFont = new Font("Segoe UI", subSize, FontStyle.Regular, GraphicsUnit.Pixel);
         using var text = new SolidBrush(enabled ? UiTheme.Text : UiTheme.Muted);
         using var muted = new SolidBrush(UiTheme.Muted);
-        using var numFont = new Font("Segoe UI", (enabled && r.Height > S(70) ? 22f : 14f) * DpiScale, FontStyle.Bold, GraphicsUnit.Pixel);
-        using var nameFont = new Font("Segoe UI", 9.5f * DpiScale, FontStyle.Bold, GraphicsUnit.Pixel);
-        using var subFont = new Font("Segoe UI", 8f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel);
 
-        var sf = new StringFormat { Alignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter };
-        float numY = r.Y + Math.Max(S(4), r.Height * 0.08f);
-        string numText = item.Present ? item.Number.ToString() : "—";
-        using var numBrush = new SolidBrush(item.Present ? gold.Color : UiTheme.Muted);
-        g.DrawString(numText, numFont, numBrush, new RectangleF(r.X, numY, r.Width, numFont.Height + S(2)), sf);
-
-        // Always the monitor's own name. A "Left"/"Center"/"Right" caption restated
-        // what the tile's position on the canvas already shows, while hiding the one
-        // thing the canvas can't: which physical monitor this actually is.
-        string title = ShortName(item);
-        float titleY = numY + numFont.Height;
-        if (titleY + S(16) < r.Bottom - S(4))
+        var sf = new StringFormat
         {
-            g.DrawString(title, nameFont, text, new RectangleF(r.X + S(6), titleY, r.Width - S(12), S(18)), sf);
-        }
+            Alignment = StringAlignment.Center,
+            LineAlignment = StringAlignment.Center,
+            Trimming = StringTrimming.EllipsisCharacter,
+            FormatFlags = StringFormatFlags.NoWrap
+        };
 
         string sub = $"{item.Config.Width} × {item.Config.Height}";
-
         int hz = item.Config.RefreshRate > 0 ? item.Config.RefreshRate : (item.Live?.RefreshRate ?? 0);
         if (hz > 0) sub += $"  ·  {hz} Hz";
 
@@ -441,10 +586,39 @@ internal sealed class MonitorCanvas : Control
         // value rather than leaving the card silent about it.
         int scale = item.Config.ScalePercent > 0 ? item.Config.ScalePercent : (item.Live?.ScalePercent ?? 0);
         if (scale > 0) sub += $"  ·  {scale}%";
-        float subY = titleY + S(18);
-        if (enabled && subY + S(14) < r.Bottom - S(4))
+
+        float numH = numFont.Height;
+        float nameH = nameFont.Height;
+        float subH = subFont.Height;
+
+        bool showName = r.Height > numH + nameH + S(10);
+        bool showSub = enabled && r.Height > numH + nameH + subH + S(16);
+
+        float blockH = numH + (showName ? nameH + S(2) : 0) + (showSub ? subH + S(3) : 0);
+        float y = r.Y + (r.Height - blockH) / 2f;
+
+        string numText = item.Present ? item.Number.ToString() : "—";
+        using (var numBrush = new SolidBrush(item.Present
+                   ? (enabled ? UiTheme.Gold : UiTheme.GoldDim)
+                   : UiTheme.Muted))
         {
-            g.DrawString(sub, subFont, muted, new RectangleF(r.X + S(6), subY, r.Width - S(12), S(16)), sf);
+            g.DrawString(numText, numFont, numBrush, new RectangleF(r.X, y, r.Width, numH), sf);
+        }
+        y += numH + S(2);
+
+        // Always the monitor's own name. A "Left"/"Center"/"Right" caption restated
+        // what the tile's position on the canvas already shows, while hiding the one
+        // thing the canvas can't: which physical monitor this actually is.
+        if (showName)
+        {
+            g.DrawString(ShortName(item), nameFont, text,
+                new RectangleF(r.X + S(6), y, r.Width - S(12), nameH), sf);
+            y += nameH + S(3);
+        }
+
+        if (showSub)
+        {
+            g.DrawString(sub, subFont, muted, new RectangleF(r.X + S(6), y, r.Width - S(12), subH), sf);
         }
 
         if (item.Config.IsPrimary && enabled)
@@ -471,8 +645,49 @@ internal sealed class MonitorCanvas : Control
         }
     }
 
+    /// <summary>A monitor silhouette: a short neck under the panel and a wider foot.
+    /// Two small shapes, and the tiles stop reading as plain rectangles.</summary>
+    private void DrawStand(Graphics g, Rectangle r, bool selected)
+    {
+        int alpha = selected ? 170 : 80;
+        int neckW = Math.Max(S(8), r.Width / 10);
+        int neckH = Math.Max(S(3), S(5));
+        int footW = Math.Max(S(20), r.Width / 4);
+        int footH = Math.Max(S(3), S(4));
+
+        using var brush = new SolidBrush(Color.FromArgb(alpha, UiTheme.Gold));
+        g.FillRectangle(brush, r.X + (r.Width - neckW) / 2, r.Bottom, neckW, neckH);
+        g.FillRectangle(brush, r.X + (r.Width - footW) / 2, r.Bottom + neckH, footW, footH);
+    }
+
+    private static Color Lighten(Color c, float amount) => Color.FromArgb(
+        c.A,
+        (int)Math.Min(255, c.R + 255 * amount),
+        (int)Math.Min(255, c.G + 255 * amount),
+        (int)Math.Min(255, c.B + 255 * amount));
+
+    private static Color Darken(Color c, float amount) => Color.FromArgb(
+        c.A,
+        (int)Math.Max(0, c.R - 255 * amount),
+        (int)Math.Max(0, c.G - 255 * amount),
+        (int)Math.Max(0, c.B - 255 * amount));
+
+    private static System.Drawing.Drawing2D.GraphicsPath RoundedPath(Rectangle r, int radius)
+    {
+        var path = new System.Drawing.Drawing2D.GraphicsPath();
+        int d = Math.Max(2, Math.Min(radius * 2, Math.Min(r.Width, r.Height)));
+        path.AddArc(r.X, r.Y, d, d, 180, 90);
+        path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+        path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+        path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+
     private void DrawShelf(Graphics g, int shelfTop)
     {
+        if (ShelfHeight <= 0) return;
+
         using var fill = new SolidBrush(_overShelf ? Color.FromArgb(36, 22, 20) : UiTheme.Panel);
         g.FillRectangle(fill, 0, shelfTop, Width, ShelfHeight);
         using var pen = new Pen(_overShelf ? UiTheme.Danger : UiTheme.Line);

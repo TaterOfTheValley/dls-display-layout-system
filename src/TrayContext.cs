@@ -23,7 +23,7 @@ public class TrayContext : ApplicationContext
 
         _notifyIcon = new NotifyIcon
         {
-            Icon = CreateMonitorIcon(),
+            Icon = AppIcon.Shared,
             Text = "Monitor Layout Switcher",
             Visible = true
         };
@@ -351,38 +351,6 @@ public class TrayContext : ApplicationContext
         _configForm.BringToFront();
     }
 
-    private Icon CreateMonitorIcon()
-    {
-        using var bmp = new Bitmap(32, 32);
-        using (var g = Graphics.FromImage(bmp))
-        {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.Clear(Color.Transparent);
-
-            // Gold monitor frame
-            using var pen = new Pen(Color.FromArgb(232, 189, 99), 2f);
-            using var brush = new SolidBrush(Color.FromArgb(25, 22, 18));
-            using var screenBrush = new SolidBrush(Color.FromArgb(232, 189, 99));
-
-            g.FillRoundedRectangle(brush, 4, 6, 24, 16, 2);
-            g.DrawRoundedRectangle(pen, 4, 6, 24, 16, 2);
-
-            // Screen glow dot
-            g.FillRectangle(screenBrush, 8, 10, 16, 8);
-
-            // Stand
-            g.DrawLine(pen, 16, 22, 16, 26);
-            g.DrawLine(pen, 10, 26, 22, 26);
-        }
-
-        return Icon.FromHandle(bmp.GetHicon());
-    }
-
-    /// <summary>
-    /// Re-reads the live layout after an external display change. Read-only — it
-    /// never applies anything, so it cannot feed back into the change it is
-    /// reacting to.
-    /// </summary>
     private void OnDisplaySettingsChanged(object? sender, EventArgs e)
     {
         DisplayModes.Invalidate();
