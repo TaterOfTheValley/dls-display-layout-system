@@ -1,128 +1,182 @@
+using System.Runtime.InteropServices;
+
 namespace MonitorLayoutSwitcher;
 
 internal static class Program
 {
+    [DllImport("kernel32.dll")]
+    private static extern bool AttachConsole(int dwProcessId);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool AllocConsole();
+
+    private const int AttachParentProcess = -1;
+
+    /// <summary>
+    /// This is a WinExe, so it starts with no console and every Console.Write from a
+    /// CLI diagnostic is silently discarded. Attach to the launching terminal (or
+    /// open one) and rebind stdout before any diagnostic runs. Also routes a copy to
+    /// a file when the caller passes one, which is the reliable way to capture output
+    /// from a GUI-subsystem process.
+    /// </summary>
+    private static void StartConsole(string? teeFile = null)
+    {
+        if (!AttachConsole(AttachParentProcess)) AllocConsole();
+
+        var writer = new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true };
+        if (!string.IsNullOrWhiteSpace(teeFile))
+        {
+            var file = new StreamWriter(teeFile, append: false) { AutoFlush = true };
+            Console.SetOut(new TeeWriter(writer, file));
+        }
+        else
+        {
+            Console.SetOut(writer);
+        }
+    }
+
+    private sealed class TeeWriter : TextWriter
+    {
+        private readonly TextWriter _a, _b;
+        public TeeWriter(TextWriter a, TextWriter b) { _a = a; _b = b; }
+        public override System.Text.Encoding Encoding => _a.Encoding;
+        public override void Write(char value) { _a.Write(value); _b.Write(value); }
+        public override void Write(string? value) { _a.Write(value); _b.Write(value); }
+        public override void WriteLine(string? value) { _a.WriteLine(value); _b.WriteLine(value); }
+        public override void Flush() { _a.Flush(); _b.Flush(); }
+    }
+
+    /// <summary>
+    /// Runs a diagnostic with its exceptions printed rather than thrown. An unhandled
+    /// exception in a WinExe raises a modal Windows Error Reporting dialog, which
+    /// hangs a non-interactive run forever instead of failing.
+    /// </summary>
+    private static void RunDiagnostic(string[] args, Action body)
+    {
+        string? tee = null;
+        for (int i = 0; i < args.Length - 1; i++)
+        {
+            if (args[i].Equals("--out", StringComparison.OrdinalIgnoreCase)) tee = args[i + 1];
+        }
+
+        StartConsole(tee);
+        try
+        {
+            body();
+            Environment.ExitCode = 0;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"ERROR: {ex.GetType().Name}: {ex.Message}");
+            Console.WriteLine(ex.StackTrace);
+            Environment.ExitCode = 1;
+        }
+        finally
+        {
+            Console.Out.Flush();
+        }
+    }
+
     [STAThread]
     private static void Main(string[] args)
     {
-        ApplicationConfiguration.Initialize();
-
-        if (args.Length > 0 && args[0].Equals("--test-identity", StringComparison.OrdinalIgnoreCase))
+        if (args.Length > 0 && args[0].Equals("--dump-config", StringComparison.OrdinalIgnoreCase))
         {
-            bool pass = true;
-
-            // Same model, different physical port/instance (UID suffix differs) -> must NOT match.
-            const string legacyA = @"MONITOR\DEL4090\5&26957f3d&0&UID4352_0";
-            const string legacyB = @"MONITOR\DEL4090\5&26957f3d&0&UID4353_0";
-            pass &= Check("Legacy MONITOR ids with different UID are distinct",
-                !DisplayEngine.SameHardwareIdentity(legacyA, legacyB));
-
-            // Same string compared to itself -> must match.
-            pass &= Check("Legacy MONITOR id matches itself",
-                DisplayEngine.SameHardwareIdentity(legacyA, legacyA));
-
-            // Modern DISPLAYCONFIG device path form, different UID, same trailing GUID class -> must NOT match.
-            const string modernA = @"\\?\DISPLAY#DEL4090#5&26957f3d&0&UID4352#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}";
-            const string modernB = @"\\?\DISPLAY#DEL4090#5&26957f3d&0&UID4353#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}";
-            pass &= Check("Modern DISPLAY# ids with different UID are distinct",
-                !DisplayEngine.SameHardwareIdentity(modernA, modernB));
-
-            pass &= Check("Modern DISPLAY# id matches itself",
-                DisplayEngine.SameHardwareIdentity(modernA, modernA));
-
-            // Same physical monitor described once in legacy form and once in modern form -> must match.
-            pass &= Check("Legacy and modern ids for the same monitor+port match",
-                DisplayEngine.SameHardwareIdentity(legacyA, modernA));
-
-            // "PnP device instance id" style legacy ids (no UID token at all — what
-            // EnumDisplayDevices actually returns on many real systems): same model,
-            // different trailing instance number -> must NOT match. This is the exact
-            // shape that originally collapsed onto a single "identity" for every
-            // same-model monitor.
-            const string instanceIdA = @"MONITOR\DELF13D\{4d36e96e-e325-11ce-bfc1-08002be10318}\0000";
-            const string instanceIdB = @"MONITOR\DELF13D\{4d36e96e-e325-11ce-bfc1-08002be10318}\0002";
-            pass &= Check("PnP-instance-id legacy ids with different instance numbers are distinct",
-                !DisplayEngine.SameHardwareIdentity(instanceIdA, instanceIdB));
-
-            pass &= Check("PnP-instance-id legacy id matches itself",
-                DisplayEngine.SameHardwareIdentity(instanceIdA, instanceIdA));
-
-            Console.WriteLine(pass ? "Identity self-test PASSED." : "Identity self-test FAILED.");
-            Environment.ExitCode = pass ? 0 : 1;
-            return;
-
-            static bool Check(string name, bool condition)
+            // Non-destructive: prints the live CCD topology, including monitors that
+            // are connected but currently disabled. This is the first thing to run
+            // when a layout misbehaves.
+            RunDiagnostic(args, () =>
             {
-                Console.WriteLine($"[{(condition ? "PASS" : "FAIL")}] {name}");
-                return condition;
+                CcdNative.AssertLayout();
+                Console.WriteLine("CCD interop struct layout: OK");
+                Console.WriteLine();
+                Console.Write(DisplayEngine.DumpConfiguration());
+            });
+            return;
+        }
+
+        if (args.Length > 0 && args[0].Equals("--capture", StringComparison.OrdinalIgnoreCase))
+        {
+            RunDiagnostic(args, () =>
+            {
+            string name = args.Length > 1 ? args[1] : "Captured layout";
+            var captured = DisplayEngine.CaptureCurrentLayoutAsProfile(name, string.Empty);
+            var all = ProfileManager.LoadProfiles();
+            all.RemoveAll(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+            all.Add(captured);
+            Console.WriteLine(ProfileManager.TrySaveProfiles(all, out string saveErr)
+                ? $"Captured '{name}' with {captured.Displays.Count} monitor(s), " +
+                  $"{captured.Displays.Count(d => d.Enabled)} enabled."
+                : $"FAILED to save: {saveErr}");
+            });
+            return;
+        }
+
+        if (args.Length > 0 && args[0].Equals("--list-profiles", StringComparison.OrdinalIgnoreCase))
+        {
+            RunDiagnostic(args, () =>
+            {
+            var saved = ProfileManager.LoadProfiles();
+            if (saved.Count == 0) Console.WriteLine("No layouts saved yet.");
+            foreach (var p in saved)
+            {
+                Console.WriteLine($"{p.Name}  (schema v{p.SchemaVersion}" +
+                                  $"{(p.NeedsRecapture ? ", NEEDS RE-CAPTURE" : "")})");
+                foreach (var d in p.Displays)
+                {
+                    Console.WriteLine($"    {(d.Enabled ? "ON " : "off")} {d.MonitorId,-24} " +
+                                      $"{d.Width}x{d.Height} @ ({d.X},{d.Y}){(d.IsPrimary ? " PRIMARY" : "")}");
+                    Console.WriteLine($"        {d.MonitorDevicePath}");
+                }
             }
-        }
-
-        if (args.Length > 0 && args[0].Equals("--trace-apply", StringComparison.OrdinalIgnoreCase))
-        {
-            var profiles = ProfileManager.LoadProfiles();
-            string profileName = args.Length > 1 ? args[1] : profiles[0].Name;
-            var target = profiles.FirstOrDefault(p => p.Name.Equals(profileName, StringComparison.OrdinalIgnoreCase)) ?? profiles[0];
-            DisplayEngine.TraceApplyResolution(target);
-            return;
-        }
-
-        if (args.Length > 0 && args[0].Equals("--test-primary", StringComparison.OrdinalIgnoreCase))
-        {
-            string deviceName = int.TryParse(args.Length > 1 ? args[1] : "1", out int n) ? $@"\\.\DISPLAY{n}" : args[1];
-            DisplayEngine.TestSetPrimaryMinimal(deviceName);
-            return;
-        }
-
-        if (args.Length > 0 && args[0].Equals("--test-reposition", StringComparison.OrdinalIgnoreCase))
-        {
-            string deviceName = int.TryParse(args.Length > 1 ? args[1] : "1", out int n) ? $@"\\.\DISPLAY{n}" : args[1];
-            int x = args.Length > 2 ? int.Parse(args[2]) : 0;
-            int y = args.Length > 3 ? int.Parse(args[3]) : 0;
-            DisplayEngine.TestReposition(deviceName, x, y);
-            return;
-        }
-
-        if (args.Length > 0 && args[0].Equals("--list-modes", StringComparison.OrdinalIgnoreCase))
-        {
-            string arg = args.Length > 1 ? args[1] : "1";
-            string deviceName = int.TryParse(arg, out int n) ? $@"\\.\DISPLAY{n}" : arg;
-            DisplayEngine.ListModes(deviceName);
-            return;
-        }
-
-        if (args.Length > 0 && args[0].Equals("--test-disable", StringComparison.OrdinalIgnoreCase))
-        {
-            string arg = args.Length > 1 ? args[1] : "1";
-            string deviceName = int.TryParse(arg, out int n) ? $@"\\.\DISPLAY{n}" : arg;
-            DisplayEngine.TestDisableIsolated(deviceName);
+            });
             return;
         }
 
         if (args.Length > 0 && args[0].Equals("--apply", StringComparison.OrdinalIgnoreCase))
         {
+            RunDiagnostic(args, () =>
+            {
             // Real, mutating apply — calls the exact same code path the UI's Apply
             // button uses (LayoutSafety.Apply), for reproducing bugs from the CLI
             // without needing to drive the GUI.
             var profiles = ProfileManager.LoadProfiles();
+            if (profiles.Count == 0)
+            {
+                Console.WriteLine("No layouts saved yet. Capture one first: --capture \"My layout\"");
+                return;
+            }
             string profileName = args.Length > 1 ? args[1] : profiles[0].Name;
             var target = profiles.FirstOrDefault(p => p.Name.Equals(profileName, StringComparison.OrdinalIgnoreCase)) ?? profiles[0];
             Console.WriteLine($"Applying profile: '{target.Name}'");
             bool ok = LayoutSafety.Apply(target, out string msg);
             Console.WriteLine(ok ? $"SUCCESS: {msg}" : $"FAILED: {msg}");
+            });
             return;
         }
 
         if (args.Length > 0 && args[0].Equals("--test-apply", StringComparison.OrdinalIgnoreCase))
         {
+            RunDiagnostic(args, () =>
+            {
             var profiles = ProfileManager.LoadProfiles();
+            if (profiles.Count == 0)
+            {
+                Console.WriteLine("No layouts saved yet. Capture one first: --capture \"My layout\"");
+                return;
+            }
             string profileName = args.Length > 1 ? args[1] : profiles[0].Name;
             var target = profiles.FirstOrDefault(p => p.Name.Equals(profileName, StringComparison.OrdinalIgnoreCase)) ?? profiles[0];
             Console.WriteLine($"Validating profile: '{target.Name}' with {target.Displays.Count} displays ({target.Displays.Count(d => d.Enabled)} enabled)");
             bool ok = DisplayEngine.ValidateProfile(target, out string err);
             Console.WriteLine(ok ? "Validation SUCCESS (no display changes made)." : $"Validation FAILED: {err}");
+            });
             return;
         }
+
+        // Everything below needs WinForms; the diagnostics above deliberately do not,
+        // so they stay runnable even when UI initialisation would block.
+        ApplicationConfiguration.Initialize();
 
         if (args.Length > 0 && args[0].Equals("--screenshot", StringComparison.OrdinalIgnoreCase))
         {

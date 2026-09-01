@@ -323,3 +323,29 @@ this app is a display-topology tool or a monitor-input tool.
   72 and 64 bytes on x64, worth asserting at startup
 - `MartinGC94/DisplayConfig` (PowerShell) — the clearest CCD reference
   implementation; use it for Phase 0 and as a check when a call is rejected
+
+---
+
+## 9. Implementation status (2026-09-01)
+
+Steps 1-8 are implemented and the Release build is clean (0 warnings).
+What is NOT yet done: the on-hardware verification. `--dump-config` could not be
+run from this session because the WinExe would not produce console output under
+the agent shell. Run it yourself in a real terminal (see below) before trusting
+any profile.
+
+**Files added:** `src/CcdInterop.cs` (structs + P/Invoke), `src/CcdEngine.cs`
+(query / capture / apply).
+
+**Files rewritten:** `src/DisplayEngine.cs` is now a ~220-line facade over
+CcdEngine, down from 1310 lines. All ChangeDisplaySettingsEx / EnumDisplayDevices
+/ EnumDisplaySettings interop is gone, as is ExtractMonitorKey.
+
+**Deviation from 4.1:** the `DisplayProfile` / `DisplayTargetConfig` class names
+were kept and extended rather than replaced, so `ConfigForm` and `MonitorCanvas`
+compile untouched. `HardwareId` now *holds* the monitorDevicePath, which is why
+the existing UI identity bindings keep working and became correct for free.
+
+**Deviation from 4.3:** QDC_VIRTUAL_MODE_AWARE is deliberately not used. It
+changes modeInfoIdx into two packed 16-bit fields with a different invalid
+sentinel, and buys nothing for enable/disable/position.

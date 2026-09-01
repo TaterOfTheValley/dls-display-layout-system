@@ -112,6 +112,7 @@ public class ConfigForm : Form
         _undoTimer.Tick += (_, _) => UpdateUndoBar();
         _undoTimer.Start();
         LayoutSafety.UndoStateChanged += OnUndoStateChanged;
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
         UpdateUndoBar();
     }
 
@@ -122,6 +123,7 @@ public class ConfigForm : Form
             _undoTimer.Stop();
             _undoTimer.Dispose();
             LayoutSafety.UndoStateChanged -= OnUndoStateChanged;
+            Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
             _tips.Dispose();
         }
         base.Dispose(disposing);
@@ -870,14 +872,11 @@ public class ConfigForm : Form
         }
         else
         {
-            string where = string.IsNullOrWhiteSpace(sel.RelativePosition) ? "Display" : sel.RelativePosition;
-            _inspectorTitle.Text = $"{where}  —  {sel.MonitorId}";
+            _inspectorTitle.Text = string.IsNullOrWhiteSpace(sel.MonitorId) ? sel.DeviceName : sel.MonitorId;
             string hz = sel.RefreshRate > 0 ? $" @ {sel.RefreshRate}Hz" : "";
             var liveDisplays = DisplayEngine.GetCurrentDisplays();
             bool connected = liveDisplays.Any(d =>
-                (!string.IsNullOrWhiteSpace(sel.HardwareId) &&
-                 DisplayEngine.SameHardwareIdentity(d.HardwareId, sel.HardwareId)) ||
-                string.Equals(d.DeviceName, sel.DeviceName, StringComparison.OrdinalIgnoreCase));
+                DisplayEngine.SameHardwareIdentity(d.MonitorDevicePath, sel.MonitorDevicePath));
             string link = connected ? "Connected" : "Not connected";
             _inspectorSub.Text = $"{sel.DeviceName}  ·  {sel.Width} × {sel.Height}{hz}  ·  {link}" + (sel.IsPrimary ? "  ·  Main" : "");
             _includeToggle.Enabled = true;
@@ -1055,7 +1054,7 @@ public class ConfigForm : Form
             MarkClean();
         }
 
-        bool ok = LayoutSafety.Apply(_selectedProfile, out string msg);
+        bool ok = LayoutSafety.Apply(_selectedProfile, interactive: true, out string msg);
         _feedbackLabel.Text = msg;
         _feedbackLabel.ForeColor = ok ? UiTheme.Ok : UiTheme.Danger;
         UpdateUndoBar();
@@ -1117,13 +1116,21 @@ public class ConfigForm : Form
         UpdateWindowTitle();
     }
 
+    // Keeps the canvas honest when the layout changes outside this window — a
+    // monitor plugged in, or settings changed in Windows itself.
+    private void OnDisplaySettingsChanged(object? sender, EventArgs e)
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        BeginInvoke(() => _canvas.RefreshHardware());
+    }
+
     private void UpdateUndoBar()
     {
         bool show = LayoutSafety.CanUndo;
         _undoPanel.Visible = show;
         if (show)
         {
-            _undoLabel.Text = $"Layout applied. Undo available for {LayoutSafety.RemainingSeconds}s.";
+            _undoLabel.Text = $"Reverting in {LayoutSafety.RemainingSeconds}s unless you keep this layout.";
         }
     }
 

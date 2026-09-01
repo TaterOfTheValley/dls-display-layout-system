@@ -28,61 +28,46 @@ public static class ProfileManager
                 var loaded = JsonSerializer.Deserialize<List<DisplayProfile>>(json, JsonOptions);
                 if (loaded != null && loaded.Count > 0)
                 {
-                    // Legacy profiles may lack HardwareId and retain a stale DISPLAYn
-                    // number. Prefer stable identity, then a compatible device name,
-                    // and finally a unique monitor description for renumbered outputs.
+                    // With CCD identity there is nothing to reconcile: MonitorDevicePath
+                    // is stable across enable/disable, renumbering and reboots, so a
+                    // saved target already knows exactly which physical output it
+                    // means. All that happens here is (a) tagging pre-CCD profiles for
+                    // re-capture and (b) refreshing the cosmetic \\.\DISPLAYn label.
+                    //
+                    // The old code did three-tier fuzzy matching and then deduped on a
+                    // collapsed key, which silently dropped a monitor from the profile
+                    // whenever two targets resolved to the same live device. Both the
+                    // fuzzy matching and the lossy dedup are gone.
                     var currentHardware = DisplayEngine.GetCurrentDisplays();
                     foreach (var p in loaded)
                     {
                         p.Displays.RemoveAll(d => d.Width <= 0 || d.Height <= 0);
 
+                        // A profile written before the CCD rewrite has no device path.
+                        // Its old identity key could not tell two same-model monitors
+                        // apart, so it is not safe to migrate — flag it instead.
+                        if (p.Displays.Any(d => string.IsNullOrWhiteSpace(d.MonitorDevicePath)))
+                        {
+                            p.SchemaVersion = 1;
+                        }
+
                         foreach (var target in p.Displays)
                         {
                             var matched = currentHardware.FirstOrDefault(h =>
-                                !string.IsNullOrWhiteSpace(target.HardwareId) &&
-                                DisplayEngine.SameHardwareIdentity(h.HardwareId, target.HardwareId));
-
-                            if (matched == null)
-                            {
-                                matched = currentHardware.FirstOrDefault(h =>
-                                    string.Equals(h.DeviceName, target.DeviceName, StringComparison.OrdinalIgnoreCase) &&
-                                    (string.IsNullOrWhiteSpace(target.MonitorId) ||
-                                     string.IsNullOrWhiteSpace(h.MonitorId) ||
-                                     DisplayEngine.SameMonitorDescription(h.MonitorId, target.MonitorId)));
-                            }
-
-                            if (matched == null && !string.IsNullOrWhiteSpace(target.MonitorId))
-                            {
-                                var descriptionMatches = currentHardware.Where(h =>
-                                    DisplayEngine.SameMonitorDescription(h.MonitorId, target.MonitorId)).ToList();
-                                bool uniqueSavedDescription = p.Displays.Count(d =>
-                                    DisplayEngine.SameMonitorDescription(d.MonitorId, target.MonitorId)) == 1;
-                                if (descriptionMatches.Count == 1 && uniqueSavedDescription)
-                                {
-                                    matched = descriptionMatches[0];
-                                }
-                            }
-
+                                DisplayEngine.SameHardwareIdentity(h.MonitorDevicePath, target.MonitorDevicePath));
                             if (matched == null) continue;
 
-                            // DISPLAYn is transient; refresh it whenever the live
-                            // identity match proves which output this target is.
+                            // DISPLAYn is transient and shown in the UI only.
                             target.DeviceName = matched.DeviceName;
+                            target.HardwareId = matched.MonitorDevicePath;
                             if (string.IsNullOrWhiteSpace(target.MonitorId)) target.MonitorId = matched.MonitorId;
-                            if (string.IsNullOrWhiteSpace(target.HardwareId)) target.HardwareId = matched.HardwareId;
                             if (string.IsNullOrWhiteSpace(target.RelativePosition)) target.RelativePosition = matched.RelativePosition;
-                            if (target.Width <= 0) target.Width = matched.Width;
-                            if (target.Height <= 0) target.Height = matched.Height;
                         }
 
-                        // Remove duplicates. Prefer HardwareId (stable across DISPLAYn
-                        // renumbering) over DeviceName so two distinct saved targets
-                        // that briefly resolved to the same live device during a
-                        // topology change don't get silently collapsed into one.
+                        // Identity is unique per physical port now, so a duplicate here
+                        // means genuinely duplicated data rather than a collapsed key.
                         p.Displays = p.Displays
-                            .GroupBy(
-                                d => string.IsNullOrWhiteSpace(d.HardwareId) ? d.DeviceName : d.HardwareId,
-                                StringComparer.OrdinalIgnoreCase)
+                            .GroupBy(d => d.MonitorDevicePath, StringComparer.OrdinalIgnoreCase)
                             .Select(g => g.First())
                             .ToList();
                     }
@@ -96,8 +81,15 @@ public static class ProfileManager
             System.Diagnostics.Debug.WriteLine($"Error loading profiles: {ex.Message}");
         }
 
-        // Return default starting profile set if none exist
-        return GetDefaultProfiles();
+        // No profiles yet. Start empty rather than inventing any.
+        //
+        // Deliberate: a generated starter profile is built from whatever monitors
+        // this particular PC happens to have, so on anyone else's machine it is
+        // either meaningless or actively wrong — and because it also writes
+        // profiles.json on first run, it looks like deliberate configuration rather
+        // than a guess. The UI prompts to capture the current layout instead, which
+        // takes one click and is correct by construction.
+        return new List<DisplayProfile>();
     }
 
     public static void SaveProfiles(List<DisplayProfile> profiles)
@@ -125,43 +117,4 @@ public static class ProfileManager
         }
     }
 
-    public static List<DisplayProfile> GetDefaultProfiles()
-    {
-        var currentDisplays = DisplayEngine.GetCurrentDisplays();
-        var attached = currentDisplays.Where(d => d.IsAttached).OrderBy(d => d.X).ToList();
-
-        // 1. "Desk / all three" profile
-        var deskProfile = DisplayEngine.CaptureCurrentLayoutAsProfile("Desk / all three", "Ctrl + Alt + 1");
-
-        // 2. "Share / left only" profile
-        var shareProfile = new DisplayProfile
-        {
-            Name = "Share / left only",
-            Hotkey = "Ctrl + Alt + 2",
-            Displays = new List<DisplayTargetConfig>()
-        };
-
-        foreach (var d in currentDisplays)
-        {
-            bool isLeft = string.Equals(d.RelativePosition, "Left", StringComparison.OrdinalIgnoreCase);
-            shareProfile.Displays.Add(new DisplayTargetConfig
-            {
-                DeviceName = d.DeviceName,
-                MonitorId = d.MonitorId,
-                HardwareId = d.HardwareId,
-                RelativePosition = d.RelativePosition,
-                Enabled = isLeft, // Only left is enabled
-                X = isLeft ? 0 : d.X,
-                Y = isLeft ? 0 : d.Y,
-                Width = d.Width,
-                Height = d.Height,
-                RefreshRate = d.RefreshRate,
-                IsPrimary = isLeft
-            });
-        }
-
-        var defaultList = new List<DisplayProfile> { deskProfile, shareProfile };
-        SaveProfiles(defaultList);
-        return defaultList;
-    }
 }
