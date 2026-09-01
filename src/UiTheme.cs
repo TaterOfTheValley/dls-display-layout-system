@@ -34,6 +34,11 @@ internal static class UiTheme
         btn.FlatAppearance.BorderSize = primary ? 0 : 1;
         btn.FlatAppearance.BorderColor = Line;
         btn.FlatAppearance.MouseOverBackColor = primary ? GoldHover : CardHover;
+        btn.EnabledChanged += (_, _) =>
+        {
+            btn.BackColor = btn.Enabled ? (primary ? Gold : Card) : Card;
+            btn.ForeColor = btn.Enabled ? (primary ? Ink : Text) : Muted;
+        };
         return btn;
     }
 

@@ -28,6 +28,15 @@ internal sealed class CcdPath
     public bool HasTargetMode;
     public DISPLAYCONFIG_TARGET_MODE TargetMode;
 
+    /// <summary>The panel's own preferred (native) mode. Available even while the
+    /// output is inactive, which is the only way to know a disabled monitor is 4K.</summary>
+    public int NativeWidth;
+    public int NativeHeight;
+
+    /// <summary>Current Windows scaling percentage, or 0 if it could not be read.</summary>
+    public int ScalePercent;
+    public int RecommendedScalePercent;
+
     public bool IsPrimary => IsActive && X == 0 && Y == 0;
 
     public override string ToString() =>
@@ -122,6 +131,10 @@ internal static class CcdEngine
         if (path.IsActive)
         {
             entry.GdiDeviceName = GetSourceName(path.sourceInfo.adapterId, path.sourceInfo.id);
+
+            var scale = GetDpiScale(path.sourceInfo.adapterId, path.sourceInfo.id);
+            entry.ScalePercent = scale.Current;
+            entry.RecommendedScalePercent = scale.Recommended;
         }
 
         uint srcIdx = path.sourceInfo.modeInfoIdx;
@@ -135,6 +148,30 @@ internal static class CcdEngine
             entry.Y = src.position.y;
             entry.Width = (int)src.width;
             entry.Height = (int)src.height;
+        }
+
+        // The monitor's native mode, straight from its EDID via the driver. Queried
+        // for every path, not just inactive ones, so the editor can always offer the
+        // real native resolution as a choice.
+        if (TryGetPreferredMode(path.targetInfo.adapterId, path.targetInfo.id,
+                                out int nativeW, out int nativeH, out var nativeMode))
+        {
+            entry.NativeWidth = nativeW;
+            entry.NativeHeight = nativeH;
+
+            // An inactive path carries no source mode at all, so without this a
+            // disabled 4K monitor captured as 0x0 and the editor fell back to 1080p.
+            if (entry.Width <= 0 || entry.Height <= 0)
+            {
+                entry.Width = nativeW;
+                entry.Height = nativeH;
+            }
+
+            if (!entry.HasTargetMode)
+            {
+                entry.HasTargetMode = true;
+                entry.TargetMode = nativeMode;
+            }
         }
 
         uint tgtIdx = path.targetInfo.modeInfoIdx;
@@ -167,6 +204,159 @@ internal static class CcdEngine
         if (CcdNative.DisplayConfigGetDeviceInfo(ref request) != Ccd.ERROR_SUCCESS) return string.Empty;
         friendlyName = request.monitorFriendlyDeviceName ?? string.Empty;
         return request.monitorDevicePath ?? string.Empty;
+    }
+
+    private static readonly Dictionary<string, (int W, int H, DISPLAYCONFIG_TARGET_MODE Mode)?> PreferredModeCache = new();
+
+    /// <summary>
+    /// Drops cached per-port data. Called on a display change, which is the only thing
+    /// that can invalidate a monitor's native mode.
+    /// </summary>
+    public static void InvalidateCaches()
+    {
+        lock (PreferredModeCache) PreferredModeCache.Clear();
+    }
+
+    private static bool TryGetPreferredMode(LUID adapterId, uint targetId,
+                                            out int width, out int height,
+                                            out DISPLAYCONFIG_TARGET_MODE mode)
+    {
+        width = 0;
+        height = 0;
+        mode = default;
+
+        // This runs for every path on every enumeration — 100+ on a machine with
+        // several outputs — and each call is a driver round trip. Cached, because the
+        // answer is fixed for a given panel on a given port.
+        string key = $"{adapterId.HighPart:X8}{adapterId.LowPart:X8}:{targetId}";
+        lock (PreferredModeCache)
+        {
+            if (PreferredModeCache.TryGetValue(key, out var cached))
+            {
+                if (cached == null) return false;
+                (width, height, mode) = cached.Value;
+                return true;
+            }
+        }
+
+        var request = new DISPLAYCONFIG_TARGET_PREFERRED_MODE
+        {
+            header = new DISPLAYCONFIG_DEVICE_INFO_HEADER
+            {
+                type = Ccd.DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_PREFERRED_MODE,
+                size = (uint)System.Runtime.InteropServices.Marshal.SizeOf<DISPLAYCONFIG_TARGET_PREFERRED_MODE>(),
+                adapterId = adapterId,
+                id = targetId
+            }
+        };
+
+        bool ok = CcdNative.DisplayConfigGetDeviceInfo(ref request) == Ccd.ERROR_SUCCESS &&
+                  request.width != 0 && request.height != 0;
+
+        lock (PreferredModeCache)
+        {
+            PreferredModeCache[key] = ok
+                ? ((int)request.width, (int)request.height, request.targetMode)
+                : null;
+        }
+
+        if (!ok) return false;
+
+        width = (int)request.width;
+        height = (int)request.height;
+        mode = request.targetMode;
+        return true;
+    }
+
+    internal readonly record struct DpiScale(int Current, int Recommended, int Min, int Max)
+    {
+        public bool Known => Current > 0;
+    }
+
+    /// <summary>
+    /// Reads a source's scaling percentage. The API is relative — it reports how many
+    /// steps below and above Windows' recommendation are allowed — so the recommended
+    /// entry sits at index -minScaleRel in the step table and everything else is
+    /// offset from there.
+    ///
+    /// Undocumented, so every failure is silent and simply reports "unknown"; scaling
+    /// is a nicety and must never be able to break a layout switch.
+    /// </summary>
+    public static DpiScale GetDpiScale(LUID adapterId, uint sourceId)
+    {
+        try
+        {
+            var request = new DISPLAYCONFIG_SOURCE_DPI_SCALE_GET
+            {
+                header = new DISPLAYCONFIG_DEVICE_INFO_HEADER
+                {
+                    type = Ccd.DISPLAYCONFIG_DEVICE_INFO_GET_DPI_SCALE,
+                    size = (uint)System.Runtime.InteropServices.Marshal.SizeOf<DISPLAYCONFIG_SOURCE_DPI_SCALE_GET>(),
+                    adapterId = adapterId,
+                    id = sourceId
+                }
+            };
+
+            if (CcdNative.DisplayConfigGetDeviceInfo(ref request) != Ccd.ERROR_SUCCESS) return default;
+
+            var steps = Ccd.DpiScaleSteps;
+            int recommendedIdx = -request.minScaleRel;
+            if (recommendedIdx < 0 || recommendedIdx >= steps.Length) return default;
+
+            int currentIdx = Math.Clamp(recommendedIdx + request.curScaleRel, 0, steps.Length - 1);
+            int maxIdx = Math.Clamp(recommendedIdx + request.maxScaleRel, 0, steps.Length - 1);
+
+            return new DpiScale(steps[currentIdx], steps[recommendedIdx], steps[0], steps[maxIdx]);
+        }
+        catch
+        {
+            return default;
+        }
+    }
+
+    /// <summary>Sets a source's scaling percentage. Best-effort; returns false rather
+    /// than throwing so a failure downgrades to "layout applied, scale unchanged".</summary>
+    public static bool SetDpiScale(LUID adapterId, uint sourceId, int percent)
+    {
+        try
+        {
+            var steps = Ccd.DpiScaleSteps;
+            int targetIdx = Array.IndexOf(steps, percent);
+            if (targetIdx < 0) return false;
+
+            var current = new DISPLAYCONFIG_SOURCE_DPI_SCALE_GET
+            {
+                header = new DISPLAYCONFIG_DEVICE_INFO_HEADER
+                {
+                    type = Ccd.DISPLAYCONFIG_DEVICE_INFO_GET_DPI_SCALE,
+                    size = (uint)System.Runtime.InteropServices.Marshal.SizeOf<DISPLAYCONFIG_SOURCE_DPI_SCALE_GET>(),
+                    adapterId = adapterId,
+                    id = sourceId
+                }
+            };
+            if (CcdNative.DisplayConfigGetDeviceInfo(ref current) != Ccd.ERROR_SUCCESS) return false;
+
+            int recommendedIdx = -current.minScaleRel;
+            if (recommendedIdx < 0 || recommendedIdx >= steps.Length) return false;
+
+            var set = new DISPLAYCONFIG_SOURCE_DPI_SCALE_SET
+            {
+                header = new DISPLAYCONFIG_DEVICE_INFO_HEADER
+                {
+                    type = Ccd.DISPLAYCONFIG_DEVICE_INFO_SET_DPI_SCALE,
+                    size = (uint)System.Runtime.InteropServices.Marshal.SizeOf<DISPLAYCONFIG_SOURCE_DPI_SCALE_SET>(),
+                    adapterId = adapterId,
+                    id = sourceId
+                },
+                scaleRel = targetIdx - recommendedIdx
+            };
+
+            return CcdNative.DisplayConfigSetDeviceInfo(ref set) == Ccd.ERROR_SUCCESS;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static string GetSourceName(LUID adapterId, uint sourceId)
@@ -259,6 +449,9 @@ internal static class CcdEngine
             TotalCy = signal.totalSize.cy,
             VideoStandard = signal.videoStandard,
             ScanLineOrdering = signal.scanLineOrdering,
+            NativeWidth = entry.NativeWidth,
+            NativeHeight = entry.NativeHeight,
+            ScalePercent = entry.ScalePercent,
             PixelFormat = entry.HasSourceMode ? entry.SourceMode.pixelFormat : Ccd.DISPLAYCONFIG_PIXELFORMAT_32BPP
         };
     }
@@ -330,19 +523,39 @@ internal static class CcdEngine
 
         NormalizeOrigin(chosen);
 
+        // A layout whose resolution or refresh rate was changed in the editor has no
+        // timings for that monitor, so Windows must resolve the mode itself — which
+        // requires SDC_ALLOW_CHANGES. Going straight to tier 2 in that case avoids a
+        // guaranteed failure.
+        bool needsModeResolution = chosen.Any(c => !c.Target.HasTargetMode);
+
+        CcdResult result;
+        (DISPLAYCONFIG_PATH_INFO[] Paths, DISPLAYCONFIG_MODE_INFO[] Modes) attempt;
+
         // Tier 1 — supply the complete topology AND exact modes. One call, no
         // ambiguity, exact refresh rates and positions preserved.
-        var attempt = BuildExact(topo, chosen);
-        var result = Submit(attempt.Paths, attempt.Modes,
-            Ccd.SDC_USE_SUPPLIED_DISPLAY_CONFIG, validateOnly, "exact");
-        if (result.Ok) return result;
+        if (!needsModeResolution)
+        {
+            attempt = BuildExact(topo, chosen);
+            result = Submit(attempt.Paths, attempt.Modes,
+                Ccd.SDC_USE_SUPPLIED_DISPLAY_CONFIG, validateOnly, "exact");
+            if (result.Ok)
+            {
+                if (!validateOnly) ApplyScaling(chosen);
+                return result;
+            }
+        }
 
-        // Tier 2 — same topology, but let Windows adjust modes it can't honour
-        // verbatim (stale saved timings, a driver update, a different cable).
+        // Tier 2 — same topology, but let Windows resolve or adjust modes: a rate
+        // requested by number, stale saved timings, a driver update, a different cable.
         attempt = BuildExact(topo, chosen);
         result = Submit(attempt.Paths, attempt.Modes,
             Ccd.SDC_USE_SUPPLIED_DISPLAY_CONFIG | Ccd.SDC_ALLOW_CHANGES, validateOnly, "relaxed");
-        if (result.Ok) return result;
+        if (result.Ok)
+        {
+            if (!validateOnly) ApplyScaling(chosen);
+            return result;
+        }
 
         // Tier 3 — topology only: say which monitors are on and let Windows pick
         // every mode from its own per-topology database. Loses exact positions, so
@@ -366,6 +579,7 @@ internal static class CcdEngine
                 Ccd.SDC_USE_SUPPLIED_DISPLAY_CONFIG | Ccd.SDC_ALLOW_CHANGES, false, "exact-after-topology");
         }
 
+        ApplyScaling(chosen);
         return CcdResult.Success("Applied (Windows chose display modes for one or more monitors).");
     }
 
@@ -383,6 +597,32 @@ internal static class CcdEngine
             result.Add((target, match));
         }
         return result;
+    }
+
+    /// <summary>
+    /// Applies each layout's saved scaling percentage, after the topology is live.
+    ///
+    /// Deliberately separate from the atomic SetDisplayConfig call and deliberately
+    /// non-fatal: the DPI API is undocumented, and a scale that will not take should
+    /// never turn a successful layout switch into a failure. Re-queries first because
+    /// enabling a monitor can hand it a different source than it had before.
+    /// </summary>
+    private static void ApplyScaling(List<(DisplayTargetConfig Target, CcdPath Path)> chosen)
+    {
+        if (!chosen.Any(c => c.Target.ScalePercent > 0)) return;
+
+        var topo = Query(includeInactive: false);
+        foreach (var (target, _) in chosen)
+        {
+            if (target.ScalePercent <= 0) continue;
+
+            var live = topo.Entries.FirstOrDefault(e =>
+                e.IsActive && SameMonitor(e.MonitorDevicePath, IdentityOf(target)));
+            if (live == null || live.ScalePercent == target.ScalePercent) continue;
+
+            var source = topo.Paths[live.Index].sourceInfo;
+            SetDpiScale(source.adapterId, source.id, target.ScalePercent);
+        }
     }
 
     /// <summary>
@@ -498,23 +738,29 @@ internal static class CcdEngine
             // Target mode: the saved signal info if the profile carries one (captured
             // while this monitor was live, so the timings are real), otherwise the
             // live one, otherwise none at all — INVALID tells Windows to choose.
+            // ONLY the layout's own captured timings. There used to be a fallback to
+            // the live target mode here, and it silently broke refresh-rate changes:
+            // a supplied target mode is an exact timing that overrides
+            // targetInfo.refreshRate, so substituting the monitor's current signal
+            // info pinned it to the rate it already had. When the layout has no
+            // timings of its own — because the user picked a resolution or rate in the
+            // editor — the mode index stays INVALID and the refreshRate field below
+            // becomes the request Windows resolves against real hardware modes.
             int targetIdx = -1;
-            if (target.HasTargetMode || live.HasTargetMode)
+            if (target.HasTargetMode)
             {
-                var signal = target.HasTargetMode
-                    ? new DISPLAYCONFIG_VIDEO_SIGNAL_INFO
-                    {
-                        pixelRate = target.PixelRate,
-                        hSyncFreq = new DISPLAYCONFIG_RATIONAL
-                            { Numerator = target.HSyncNumerator, Denominator = target.HSyncDenominator },
-                        vSyncFreq = new DISPLAYCONFIG_RATIONAL
-                            { Numerator = target.VSyncNumerator, Denominator = target.VSyncDenominator },
-                        activeSize = new DISPLAYCONFIG_2DREGION { cx = target.ActiveCx, cy = target.ActiveCy },
-                        totalSize = new DISPLAYCONFIG_2DREGION { cx = target.TotalCx, cy = target.TotalCy },
-                        videoStandard = target.VideoStandard,
-                        scanLineOrdering = target.ScanLineOrdering
-                    }
-                    : live.TargetMode.targetVideoSignalInfo;
+                var signal = new DISPLAYCONFIG_VIDEO_SIGNAL_INFO
+                {
+                    pixelRate = target.PixelRate,
+                    hSyncFreq = new DISPLAYCONFIG_RATIONAL
+                        { Numerator = target.HSyncNumerator, Denominator = target.HSyncDenominator },
+                    vSyncFreq = new DISPLAYCONFIG_RATIONAL
+                        { Numerator = target.VSyncNumerator, Denominator = target.VSyncDenominator },
+                    activeSize = new DISPLAYCONFIG_2DREGION { cx = target.ActiveCx, cy = target.ActiveCy },
+                    totalSize = new DISPLAYCONFIG_2DREGION { cx = target.TotalCx, cy = target.TotalCy },
+                    videoStandard = target.VideoStandard,
+                    scanLineOrdering = target.ScanLineOrdering
+                };
 
                 targetIdx = modes.Count;
                 modes.Add(new DISPLAYCONFIG_MODE_INFO
@@ -652,6 +898,30 @@ internal static class CcdEngine
         _ => $"error({code})"
     };
 
+    /// <summary>Diagnostic: set the primary display's scaling and report what actually
+    /// happened, so the undocumented DPI calls can be verified in isolation.</summary>
+    public static string TestScale(int percent)
+    {
+        var topo = Query(includeInactive: false);
+        var primary = topo.Entries.FirstOrDefault(e => e.IsPrimary) ?? topo.Entries.FirstOrDefault(e => e.IsActive);
+        if (primary == null) return "No active display.";
+
+        var src = topo.Paths[primary.Index].sourceInfo;
+        var before = GetDpiScale(src.adapterId, src.id);
+        bool called = SetDpiScale(src.adapterId, src.id, percent);
+
+        InvalidateCaches();
+        var after = Query(includeInactive: false);
+        var again = after.Entries.FirstOrDefault(e => SameMonitor(e.MonitorDevicePath, primary.MonitorDevicePath));
+
+        return string.Join(Environment.NewLine,
+            primary.FriendlyName,
+            $"  before    : {before.Current}% (recommended {before.Recommended}%, max {before.Max}%)",
+            $"  requested : {percent}%",
+            $"  SetDpiScale returned: {called}",
+            $"  now       : {(again?.ScalePercent ?? 0)}%");
+    }
+
     public static string Dump()
     {
         var sb = new StringBuilder();
@@ -675,6 +945,8 @@ internal static class CcdEngine
             sb.AppendLine($"  paths    : {string.Join(", ", group.Select(e => $"#{e.Index}{(e.IsActive ? "*" : "")}{(e.TargetAvailable ? "" : " (unavailable)")}"))}");
             // Two ACTIVE monitors printing the same source are cloned, not extended.
             sb.AppendLine($"  source   : {SourceKey(topo, best)}");
+            sb.AppendLine($"  native   : {(best.NativeWidth > 0 ? $"{best.NativeWidth}x{best.NativeHeight}" : "unknown")}");
+            sb.AppendLine($"  scale    : {(best.ScalePercent > 0 ? $"{best.ScalePercent}% (recommended {best.RecommendedScalePercent}%)" : "unknown")}");
             sb.AppendLine();
         }
 

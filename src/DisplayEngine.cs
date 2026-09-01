@@ -14,6 +14,10 @@ public class DisplayInfo
     public int RefreshRate { get; set; }
     public bool IsPrimary { get; set; }
     public bool IsAttached { get; set; }
+    public int NativeWidth { get; set; }
+    public int NativeHeight { get; set; }
+    public int ScalePercent { get; set; }
+    public int RecommendedScalePercent { get; set; }
     public string RelativePosition { get; set; } = "Center"; // Left, Center, Right
 
     public override string ToString() =>
@@ -108,6 +112,14 @@ public class DisplayTargetConfig
     public uint VideoStandard { get; set; }
     public uint ScanLineOrdering { get; set; }
 
+    /// <summary>The panel's native resolution, for offering "native" in the editor.</summary>
+    public int NativeWidth { get; set; }
+    public int NativeHeight { get; set; }
+
+    /// <summary>Windows scaling to apply after the switch, as a percentage.
+    /// 0 means "leave whatever Windows already has".</summary>
+    public int ScalePercent { get; set; }
+
     internal DisplayTargetConfig CopyOf() => (DisplayTargetConfig)MemberwiseClone();
 }
 
@@ -145,8 +157,8 @@ public static class DisplayEngine
             if (width <= 0 || height <= 0)
             {
                 var active = entry.TargetMode.targetVideoSignalInfo.activeSize;
-                width = active.cx > 0 ? (int)active.cx : 1920;
-                height = active.cy > 0 ? (int)active.cy : 1080;
+                width = entry.NativeWidth > 0 ? entry.NativeWidth : (active.cx > 0 ? (int)active.cx : 1920);
+                height = entry.NativeHeight > 0 ? entry.NativeHeight : (active.cy > 0 ? (int)active.cy : 1080);
             }
 
             result.Add(new DisplayInfo
@@ -163,7 +175,11 @@ public static class DisplayEngine
                 Height = height,
                 RefreshRate = (int)Math.Round(entry.RefreshRate.AsHz),
                 IsPrimary = entry.IsPrimary,
-                IsAttached = entry.IsActive
+                IsAttached = entry.IsActive,
+                NativeWidth = entry.NativeWidth,
+                NativeHeight = entry.NativeHeight,
+                ScalePercent = entry.ScalePercent,
+                RecommendedScalePercent = entry.RecommendedScalePercent
             });
         }
 
@@ -248,21 +264,6 @@ public static class DisplayEngine
     public static bool SameHardwareIdentity(string first, string second) =>
         CcdEngine.SameMonitor(first, second);
 
-    /// <summary>Names of monitors that are on now but would be switched off by this profile.</summary>
-    public static List<string> MonitorsThatWouldDisable(DisplayProfile profile)
-    {
-        var live = GetCurrentDisplays().Where(d => d.IsAttached).ToList();
-        var keeping = profile.Displays
-            .Where(d => d.Enabled)
-            .Select(d => string.IsNullOrWhiteSpace(d.MonitorDevicePath) ? d.HardwareId : d.MonitorDevicePath)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        return live
-            .Where(d => !keeping.Contains(d.MonitorDevicePath))
-            .Select(d => string.IsNullOrWhiteSpace(d.MonitorId) ? d.DeviceName : d.MonitorId)
-            .ToList();
-    }
-
     /// <summary>
     /// True when the desktop already looks like this profile. Used for the tray
     /// menu's checkmark, so a little positional slack is fine.
@@ -291,6 +292,19 @@ public static class DisplayEngine
             if (match == null) return false;
             if (match.Width != target.Width || match.Height != target.Height) return false;
             if (Math.Abs(match.X - target.X) > slack || Math.Abs(match.Y - target.Y) > slack) return false;
+
+            // Refresh rate and scaling are part of what a layout specifies, so a
+            // difference in either means it is NOT the live layout. Without this,
+            // changing only the refresh rate left the layout still "matching", and
+            // Apply reported "already active" and returned without doing anything.
+            //
+            // The 1Hz tolerance absorbs rounding: a captured 59.94Hz mode and a
+            // requested 60Hz are the same mode.
+            if (target.RefreshRate > 0 && match.RefreshRate > 0 &&
+                Math.Abs(match.RefreshRate - target.RefreshRate) > 1) return false;
+
+            if (target.ScalePercent > 0 && match.ScalePercent > 0 &&
+                match.ScalePercent != target.ScalePercent) return false;
         }
 
         return true;
@@ -299,8 +313,17 @@ public static class DisplayEngine
     private static string IdentityOf(DisplayTargetConfig target) =>
         string.IsNullOrWhiteSpace(target.MonitorDevicePath) ? target.HardwareId : target.MonitorDevicePath;
 
-    public static DisplayProfile? FindMatchingProfile(IEnumerable<DisplayProfile> profiles) =>
-        profiles.FirstOrDefault(p => MatchesCurrent(p));
+    /// <summary>
+    /// The saved layout the desktop currently matches, if any. Queries the display
+    /// configuration ONCE — the obvious `FirstOrDefault(MatchesCurrent)` does a full
+    /// CCD enumeration per layout, which is expensive enough to be visible as UI
+    /// stutter when this is called from a timer.
+    /// </summary>
+    public static DisplayProfile? FindMatchingProfile(IEnumerable<DisplayProfile> profiles)
+    {
+        var displays = GetCurrentDisplays();
+        return profiles.FirstOrDefault(p => MatchesCurrent(p, displays));
+    }
 
     /// <summary>Post-apply check: did the desktop actually end up where we asked?</summary>
     public static (bool Matched, string Summary) Verify(DisplayProfile profile)

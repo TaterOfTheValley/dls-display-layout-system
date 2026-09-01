@@ -61,6 +61,7 @@ internal static class LayoutSafety
         {
             KeepLayoutDialog.Show(
                 profile.Name,
+                profile.Displays,
                 UndoSeconds,
                 onKeep: Confirm,
                 onRevert: () => Undo(out _));

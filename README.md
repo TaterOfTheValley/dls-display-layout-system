@@ -10,7 +10,8 @@ other two back exactly as they were. That is what this does.
 
 ## What it does
 
-- Save named layouts: which monitors are on, where they sit, and at what mode.
+- Save named layouts: which monitors are on, where they sit, at what resolution
+  and scaling.
 - Switch with a global hotkey or from the tray.
 - Turn monitors off and back on again — the part Windows makes hardest.
 - Revert automatically if you don't confirm, so a switch can't strand you
@@ -52,6 +53,32 @@ so recovery has to be the thing that needs no input.
 Switching from the command line with `--apply` skips the prompt; nothing
 auto-reverts there.
 
+## Resolution, refresh rate and scaling
+
+Each monitor in a layout shows its resolution and scaling, and resolution,
+refresh rate and scaling can all be overridden in the editor.
+
+Change the resolution and the **highest refresh rate the monitor supports at that
+size** is selected automatically — dropping from 4K144 to 1440p and silently
+landing on 60Hz is a bad surprise. Override it afterwards if you want something
+else.
+
+Modes come from the display driver for a monitor that is currently attached. For
+one that is switched off, they are built from the panel's native mode instead: a
+disabled output only advertises a generic low-resolution list, so asking Windows
+what it supports would offer 1080p for a 4K panel. The native mode comes from the
+monitor's EDID, which is readable whether it is on or not.
+
+Scaling defaults to **Leave unchanged** — the layout has no opinion and switching
+to it will not touch whatever scaling the monitor already has. Set an explicit
+percentage and the layout will apply it after switching.
+
+> Windows exposes no supported API for reading or setting per-monitor scaling.
+> This uses the same undocumented calls the Settings app does. They have been
+> stable since Windows 10 1607, but a scaling change that does not take will
+> never fail the layout switch itself — the layout applies, the scale silently
+> stays put.
+
 ## Where settings live
 
 `profiles.json`, beside the executable. It is portable: copy the folder and your
@@ -78,6 +105,10 @@ The app is a GUI executable, so it attaches to the calling console. Add
 | `--capture "<name>"` | Saves the current arrangement under that name. |
 | `--test-apply "<name>"` | Validates a layout without changing anything. |
 | `--apply "<name>"` | Applies a layout. No confirmation prompt. |
+| `--set-refresh <hz>` | Sets the primary display's refresh rate through the real apply path, and reports the result. |
+| `--set-scale <percent>` | Sets the primary display's scaling and reports what actually changed. |
+| `--screenshot-menu <file>` | Renders the tray menu to a PNG. Useful for checking it at your display scaling. |
+| `--screenshot-hud <file>` | Renders the post-switch confirmation overlay to a PNG. |
 
 `--dump-config` is the one worth knowing. It shows every connected monitor —
 including ones that are currently disabled — with its identity, mode, and

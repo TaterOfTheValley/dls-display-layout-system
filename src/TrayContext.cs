@@ -5,7 +5,7 @@ namespace MonitorLayoutSwitcher;
 public class TrayContext : ApplicationContext
 {
     private readonly NotifyIcon _notifyIcon;
-    private readonly ContextMenuStrip _contextMenu;
+    private List<TrayPopup.Entry> _entries = new();
     private readonly HotkeyManager _hotkeyManager;
     private readonly FileSystemWatcher _profileWatcher;
     private readonly System.Windows.Forms.Timer _profileReloadTimer;
@@ -21,38 +21,24 @@ public class TrayContext : ApplicationContext
         _profiles = ProfileManager.LoadProfiles();
         _hotkeyManager = new HotkeyManager();
 
-        _contextMenu = new ContextMenuStrip
-        {
-            BackColor = Color.FromArgb(21, 19, 17),
-            ForeColor = Color.FromArgb(248, 240, 221),
-            ShowImageMargin = true,
-            Renderer = new DarkMenuRenderer()
-        };
-
-        // The check margin is laid out from ImageScalingSize. Left at its 16x16
-        // default it stays put while the DPI-scaled item grows around it, which is
-        // what pushed the tick out past the left edge of the menu.
-        _contextMenu.Opening += (s, e) =>
-        {
-            RefreshMenuAndHotkeys();
-
-            int dpi = _contextMenu.DeviceDpi <= 0 ? 96 : _contextMenu.DeviceDpi;
-            int glyph = Math.Max(16, (int)Math.Round(16 * dpi / 96.0));
-            if (_contextMenu.ImageScalingSize.Width != glyph)
-            {
-                _contextMenu.ImageScalingSize = new Size(glyph, glyph);
-            }
-        };
-
         _notifyIcon = new NotifyIcon
         {
             Icon = CreateMonitorIcon(),
-            ContextMenuStrip = _contextMenu,
             Text = "Monitor Layout Switcher",
             Visible = true
         };
 
         _notifyIcon.DoubleClick += (s, e) => ShowConfigWindow();
+
+        // The popup is a window we own, so it opens on the click rather than being
+        // handed to NotifyIcon. Cursor position is the anchor, which lands correctly
+        // whichever edge the taskbar is on.
+        _notifyIcon.MouseUp += (s, e) =>
+        {
+            if (e.Button != MouseButtons.Right) return;
+            RefreshMenuAndHotkeys();
+            TrayPopup.Show(_entries, Cursor.Position, TrayScale());
+        };
 
         _lastHandledProfileSignature = GetProfileSignature();
         _profileWatcher = new FileSystemWatcher(AppDomain.CurrentDomain.BaseDirectory, "profiles.json")
@@ -131,16 +117,15 @@ public class TrayContext : ApplicationContext
             return;
         }
 
-        if (_configForm != null && !_configForm.IsDisposed && _configForm.HasUnsavedChanges)
+        // Edits save themselves, so "unsaved editor changes" now only means edits
+        // still inside the debounce window. Write them out and re-check rather than
+        // interrupting with a dialog — if that write is what the watcher saw, there
+        // is nothing to reload at all.
+        if (_configForm is { IsDisposed: false } && _configForm.HasUnsavedChanges)
         {
-            var answer = MessageBox.Show(
-                "profiles.json changed outside the app. Reload it and discard your unsaved editor changes?",
-                "Profiles changed on disk",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Question);
-            if (answer != DialogResult.Yes)
+            _configForm.FlushPendingEdits();
+            if (GetProfileSignature() == _lastHandledProfileSignature)
             {
-                _lastHandledProfileSignature = signature;
                 _reloadingProfiles = false;
                 return;
             }
@@ -155,132 +140,178 @@ public class TrayContext : ApplicationContext
         _reloadingProfiles = false;
     }
 
-    private void RefreshMenuAndHotkeys()
+    /// <summary>
+    /// The DPI of the screen the tray is on. Read per-open rather than cached: the
+    /// taskbar can sit on a display with a different scale factor than the one the
+    /// app started on.
+    /// </summary>
+    private static float TrayScale()
+    {
+        var screen = Screen.FromPoint(Cursor.Position);
+        using var g = Graphics.FromHwnd(IntPtr.Zero);
+        float dpi = g.DpiX <= 0 ? 96f : g.DpiX;
+        _ = screen;
+        return dpi / 96f;
+    }
+
+    /// <summary>
+    /// Rebuilds the tray entries and re-registers global hotkeys. Called before each
+    /// open, so the live marker and the undo countdown are always current.
+    /// </summary>
+    /// <summary>
+    /// Re-registers global hotkeys. Split out from the menu rebuild because it needs
+    /// no display query: an editor autosave has to refresh hotkeys, and doing it
+    /// through the full menu rebuild meant enumerating every display path each time
+    /// the user paused typing.
+    /// </summary>
+    private void RegisterHotkeys()
     {
         _hotkeyManager.UnregisterAll();
-        _contextMenu.Items.Clear();
-
-        var titleItem = new ToolStripMenuItem("Monitor Layout Switcher")
+        foreach (var profile in _profiles)
         {
-            Enabled = false,
-            // Derived from the menu's own font rather than a fixed point size, so it
-            // follows the per-monitor DPI the menu was actually opened on.
-            Font = new Font(_contextMenu.Font, FontStyle.Bold),
-            ForeColor = Color.FromArgb(232, 189, 99)
-        };
-        _contextMenu.Items.Add(titleItem);
-        _contextMenu.Items.Add(new ToolStripSeparator());
+            var p = profile;
+            if (p.NeedsRecapture || string.IsNullOrWhiteSpace(p.Hotkey)) continue;
+            _hotkeyManager.Register(p.Hotkey, () => SwitchToProfile(p));
+        }
+    }
 
-        // Profile items. Checked state must reflect the actual live layout first —
-        // _activeProfile (the last profile explicitly switched to) is only a
-        // fallback for when the live layout doesn't match any saved profile at all
-        // (e.g. it was changed some other way). Using both independently let a
-        // stale _activeProfile stay checked alongside whichever profile the
-        // display layout had actually already matched, showing two checked items.
-        // One display query for the whole menu, not one per profile.
+    private void RefreshMenuAndHotkeys()
+    {
+        RegisterHotkeys();
+
+        var entries = new List<TrayPopup.Entry>();
+
+        // One display query for the whole menu, not one per layout.
         var liveDisplays = DisplayEngine.GetCurrentDisplays();
         var liveMatches = _profiles.ToDictionary(p => p.Id, p => DisplayEngine.MatchesCurrent(p, liveDisplays));
         bool anyLive = liveMatches.Values.Any(v => v);
 
         if (_profiles.Count == 0)
         {
-            _contextMenu.Items.Add(new ToolStripMenuItem("No layouts saved yet") { Enabled = false });
-            _contextMenu.Items.Add(new ToolStripMenuItem("Capture your current layout to get started") { Enabled = false });
+            entries.Add(new TrayPopup.HeadingEntry { Text = "NO LAYOUTS YET" });
+            entries.Add(new TrayPopup.CommandEntry
+            {
+                Text = "Save your current arrangement",
+                Emphasis = true,
+                Invoke = CaptureCurrentLayout
+            });
+        }
+        else
+        {
+            entries.Add(new TrayPopup.HeadingEntry { Text = "LAYOUTS" });
         }
 
         foreach (var profile in _profiles)
         {
-            bool isLive = liveMatches[profile.Id];
-            string label = string.IsNullOrWhiteSpace(profile.Hotkey)
-                ? profile.Name
-                : $"{profile.Name}   ({profile.Hotkey})";
-            if (isLive) label += "  •";
-
-            var item = new ToolStripMenuItem(label)
-            {
-                Checked = isLive || (!anyLive && _activeProfile?.Id == profile.Id)
-            };
-
+            // Live means the desktop actually looks like this right now. _activeProfile
+            // (the last one explicitly switched to) is only a fallback for when nothing
+            // matches — e.g. the layout was changed outside this app.
+            bool isLive = liveMatches[profile.Id] || (!anyLive && _activeProfile?.Id == profile.Id);
             var p = profile;
-            item.Click += (s, e) => SwitchToProfile(p);
-            _contextMenu.Items.Add(item);
 
-            // Register Hotkey
-            if (!string.IsNullOrWhiteSpace(p.Hotkey))
+            entries.Add(new TrayPopup.LayoutEntry
             {
-                _hotkeyManager.Register(p.Hotkey, () =>
-                {
-                    SwitchToProfile(p);
-                });
-            }
+                Profile = p,
+                IsLive = isLive,
+                Enabled = !p.NeedsRecapture,
+                Invoke = p.NeedsRecapture ? null : () => SwitchToProfile(p)
+            });
         }
 
-        _contextMenu.Items.Add(new ToolStripSeparator());
+        entries.Add(new TrayPopup.SeparatorEntry());
 
-        var undoItem = new ToolStripMenuItem(LayoutSafety.CanUndo
-            ? $"Undo last layout ({LayoutSafety.RemainingSeconds}s)"
-            : "Undo last layout")
+        if (LayoutSafety.CanUndo)
         {
-            Enabled = LayoutSafety.CanUndo
-        };
-        undoItem.Click += (s, e) =>
+            entries.Add(new TrayPopup.CommandEntry
+            {
+                Text = "Undo last switch",
+                Detail = $"{LayoutSafety.RemainingSeconds}s",
+                Emphasis = true,
+                Invoke = UndoLastSwitch
+            });
+        }
+
+        if (_profiles.Count > 0)
         {
-            bool ok = LayoutSafety.Undo(out string msg);
-            if (ok)
+            entries.Add(new TrayPopup.CommandEntry
             {
-                DetectActiveProfile();
-                _notifyIcon.Text = "Monitor Layout Switcher";
-            }
-            else
-            {
-                _notifyIcon.ShowBalloonTip(3000, "Monitor Layout Switcher — Failed", msg, ToolTipIcon.Error);
-            }
-            RefreshMenuAndHotkeys();
-        };
-        _contextMenu.Items.Add(undoItem);
+                Text = "Save current arrangement as a layout",
+                Invoke = CaptureCurrentLayout
+            });
+        }
 
-        var configItem = new ToolStripMenuItem("Configure Profiles...");
-        configItem.Click += (s, e) => ShowConfigWindow();
-        _contextMenu.Items.Add(configItem);
+        entries.Add(new TrayPopup.CommandEntry { Text = "Edit layouts\u2026", Invoke = ShowConfigWindow });
+        entries.Add(new TrayPopup.SeparatorEntry());
+        entries.Add(new TrayPopup.CommandEntry { Text = "Exit", Invoke = ExitThread });
 
-        var captureItem = new ToolStripMenuItem("Capture Current Layout as New Profile");
-        captureItem.Click += (s, e) =>
+        _entries = entries;
+    }
+
+    private void UndoLastSwitch()
+    {
+        bool ok = LayoutSafety.Undo(out string msg);
+        if (ok)
         {
-            var newP = DisplayEngine.CaptureCurrentLayoutAsProfile($"Layout {_profiles.Count + 1}", string.Empty);
-            _profiles.Add(newP);
-            if (!ProfileManager.TrySaveProfiles(_profiles, out string saveError))
+            DetectActiveProfile();
+            _notifyIcon.Text = "Monitor Layout Switcher";
+        }
+        else
+        {
+            _notifyIcon.ShowBalloonTip(3000, "Monitor Layout Switcher — Failed", msg, ToolTipIcon.Error);
+        }
+        RefreshMenuAndHotkeys();
+    }
+
+    private void CaptureCurrentLayout()
+    {
+        var created = DisplayEngine.CaptureCurrentLayoutAsProfile($"Layout {_profiles.Count + 1}", string.Empty);
+        _profiles.Add(created);
+        if (!ProfileManager.TrySaveProfiles(_profiles, out string saveError))
+        {
+            _profiles.Remove(created);
+            _notifyIcon.ShowBalloonTip(4000, "Monitor Layout Switcher — Failed", saveError, ToolTipIcon.Error);
+            return;
+        }
+
+        MarkProfileFileHandled();
+        RefreshMenuAndHotkeys();
+        _notifyIcon.ShowBalloonTip(2000, "Monitor Layout Switcher", $"Saved {created.Name}", ToolTipIcon.Info);
+    }
+
+    /// <summary>Builds the tray entries for the --screenshot-menu diagnostic.</summary>
+    internal static List<TrayPopup.Entry> BuildPreviewEntries(List<DisplayProfile> profiles)
+    {
+        var entries = new List<TrayPopup.Entry> { new TrayPopup.HeadingEntry { Text = "LAYOUTS" } };
+        var live = DisplayEngine.GetCurrentDisplays();
+
+        foreach (var p in profiles)
+        {
+            entries.Add(new TrayPopup.LayoutEntry
             {
-                _profiles.Remove(newP);
-                _notifyIcon.ShowBalloonTip(4000, "Monitor Layout Switcher — Failed", saveError, ToolTipIcon.Error);
-                return;
-            }
-            MarkProfileFileHandled();
-            RefreshMenuAndHotkeys();
-            _notifyIcon.ShowBalloonTip(2000, "Monitor Layout Switcher", $"Captured {newP.Name}", ToolTipIcon.Info);
-        };
-        _contextMenu.Items.Add(captureItem);
+                Profile = p,
+                IsLive = DisplayEngine.MatchesCurrent(p, live),
+                Enabled = !p.NeedsRecapture,
+                Invoke = () => { }
+            });
+        }
 
-        _contextMenu.Items.Add(new ToolStripSeparator());
-
-        var exitItem = new ToolStripMenuItem("Exit");
-        exitItem.Click += (s, e) => ExitThread();
-        _contextMenu.Items.Add(exitItem);
+        entries.Add(new TrayPopup.SeparatorEntry());
+        entries.Add(new TrayPopup.CommandEntry { Text = "Undo last switch", Detail = "18s", Emphasis = true, Invoke = () => { } });
+        entries.Add(new TrayPopup.CommandEntry { Text = "Save current arrangement as a layout", Invoke = () => { } });
+        entries.Add(new TrayPopup.CommandEntry { Text = "Edit layouts\u2026", Invoke = () => { } });
+        entries.Add(new TrayPopup.SeparatorEntry());
+        entries.Add(new TrayPopup.CommandEntry { Text = "Exit", Invoke = () => { } });
+        return entries;
     }
 
     private void SwitchToProfile(DisplayProfile profile)
     {
-        var turningOff = DisplayEngine.MonitorsThatWouldDisable(profile);
-        if (turningOff.Count > 0)
-        {
-            var answer = MessageBox.Show(
-                "This layout will turn off:\n\n• " + string.Join("\n• ", turningOff) +
-                "\n\nUndo is available for 20 seconds after apply.",
-                "Apply layout?",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning);
-            if (answer != DialogResult.Yes) return;
-        }
-
+        // No "this will turn off X" confirmation. The switch reverts by itself unless
+        // you keep it, so a modal beforehand asked the user to predict a consequence
+        // they are about to be shown directly — two confirmations for one action, and
+        // a system dialog in the middle of what should be a one-keypress switch.
+        // The editor dropped this already; the tray kept it, so the same action
+        // behaved differently depending on where it was started.
         bool success = LayoutSafety.Apply(profile, interactive: true, out string error);
         if (success)
         {
@@ -307,10 +338,11 @@ public class TrayContext : ApplicationContext
     {
         if (_configForm == null || _configForm.IsDisposed)
         {
+            // Called on every autosave, so it stays cheap: hotkeys must follow an
+            // edit immediately, but the menu is rebuilt when it opens anyway.
             _configForm = new ConfigForm(_profiles, () =>
             {
-                DetectActiveProfile();
-                RefreshMenuAndHotkeys();
+                RegisterHotkeys();
                 MarkProfileFileHandled();
             });
         }
@@ -353,6 +385,8 @@ public class TrayContext : ApplicationContext
     /// </summary>
     private void OnDisplaySettingsChanged(object? sender, EventArgs e)
     {
+        DisplayModes.Invalidate();
+        CcdEngine.InvalidateCaches();
         BeginInvokeOnUi(() =>
         {
             RefreshMenuAndHotkeys();
@@ -375,74 +409,6 @@ public class TrayContext : ApplicationContext
         base.ExitThreadCore();
     }
 
-    private class DarkMenuRenderer : ToolStripProfessionalRenderer
-    {
-        public DarkMenuRenderer() : base(new DarkColorTable()) { }
-
-        protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
-        {
-            e.TextColor = e.Item.Selected ? Color.Black : Color.FromArgb(248, 240, 221);
-            base.OnRenderItemText(e);
-        }
-
-        /// <summary>
-        /// Draws the checkmark as vector art centred in the image margin, instead of
-        /// letting the stock renderer blit a fixed-size glyph at a position it
-        /// computed before DPI scaling was applied. That mismatch is what made the
-        /// tick sit slightly outside the menu at scaling above 100%.
-        /// </summary>
-        protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e)
-        {
-            Rectangle r = e.ImageRectangle;
-            if (r.Width <= 0 || r.Height <= 0) return;
-
-            // Square, centred, and inset — never wider than the margin it sits in.
-            int size = Math.Max(8, (int)Math.Round(Math.Min(r.Width, r.Height) * 0.72));
-            var box = new Rectangle(
-                r.X + (r.Width - size) / 2,
-                r.Y + (r.Height - size) / 2,
-                size,
-                size);
-
-            var g = e.Graphics;
-            var oldMode = g.SmoothingMode;
-            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-
-            Color tick = e.Item.Selected ? Color.Black : Color.FromArgb(232, 189, 99);
-            using var pen = new Pen(tick, Math.Max(1.6f, size * 0.16f))
-            {
-                StartCap = System.Drawing.Drawing2D.LineCap.Round,
-                EndCap = System.Drawing.Drawing2D.LineCap.Round,
-                LineJoin = System.Drawing.Drawing2D.LineJoin.Round
-            };
-
-            g.DrawLines(pen, new[]
-            {
-                new PointF(box.Left + size * 0.18f, box.Top + size * 0.52f),
-                new PointF(box.Left + size * 0.42f, box.Top + size * 0.76f),
-                new PointF(box.Left + size * 0.84f, box.Top + size * 0.24f)
-            });
-
-            g.SmoothingMode = oldMode;
-        }
-    }
-
-    private class DarkColorTable : ProfessionalColorTable
-    {
-        public override Color ToolStripDropDownBackground => Color.FromArgb(21, 19, 17);
-        public override Color ImageMarginGradientBegin => Color.FromArgb(21, 19, 17);
-        public override Color ImageMarginGradientMiddle => Color.FromArgb(21, 19, 17);
-        public override Color ImageMarginGradientEnd => Color.FromArgb(21, 19, 17);
-        public override Color MenuBorder => Color.FromArgb(60, 52, 40);
-        public override Color MenuItemBorder => Color.FromArgb(232, 189, 99);
-        public override Color MenuItemSelected => Color.FromArgb(232, 189, 99);
-        public override Color MenuStripGradientBegin => Color.FromArgb(21, 19, 17);
-        public override Color MenuStripGradientEnd => Color.FromArgb(21, 19, 17);
-        public override Color CheckBackground => Color.FromArgb(60, 52, 40);
-        public override Color CheckSelectedBackground => Color.FromArgb(232, 189, 99);
-        public override Color SeparatorDark => Color.FromArgb(45, 40, 32);
-        public override Color SeparatorLight => Color.FromArgb(45, 40, 32);
-    }
 }
 
 public static class GraphicsExtensions
