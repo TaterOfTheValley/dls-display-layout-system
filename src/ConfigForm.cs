@@ -45,6 +45,25 @@ public class ConfigForm : Form
     private SplitContainer _split = null!;
     private readonly ToolTip _tips = new();
     private readonly System.Windows.Forms.Timer _undoTimer = new() { Interval = 1000 };
+    /// <summary>WinForms leaves Panel and FlowLayoutPanel unbuffered, so every child
+    /// repaint flashes. These exist only to turn buffering on.</summary>
+    private sealed class BufferedPanel : Panel
+    {
+        public BufferedPanel() => DoubleBuffered = true;
+    }
+
+    private sealed class BufferedFlowPanel : FlowLayoutPanel
+    {
+        public BufferedFlowPanel() => DoubleBuffered = true;
+    }
+
+    private DisplayInfo? _live;
+    private ComboBox _resolutionBox = null!;
+    private ComboBox _refreshBox = null!;
+    private ComboBox _scaleBox = null!;
+    private Panel? _emptyPanel;
+    private Control[]? _editorChrome;
+    private List<DisplayInfo> _liveForEmptyState = new();
     private bool _dirty;
     private bool _dirtyNotified;
     private System.Windows.Forms.Timer? _autoSaveTimer;
@@ -106,6 +125,7 @@ public class ConfigForm : Form
         if (_profiles.Count > 0) _selectedProfile = _profiles[0];
         RebuildProfileCards();
         LoadSelectedProfile();
+        UpdateEmptyState();
         MarkClean();
         FormClosing += ConfigForm_FormClosing;
         _undoTimer.Tick += (_, _) => UpdateUndoBar();
@@ -287,7 +307,7 @@ public class ConfigForm : Form
     {
         var root = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.Panel };
 
-        var heading = UiTheme.MakeEyebrow("PROFILES", DpiScale);
+        var heading = UiTheme.MakeEyebrow("LAYOUTS", DpiScale);
         heading.Dock = DockStyle.Top;
         heading.Height = S(22);
 
@@ -313,13 +333,13 @@ public class ConfigForm : Form
         _addProfileBtn.Click += AddProfileBtn_Click;
         _duplicateBtn.Click += DuplicateProfileBtn_Click;
         _deleteProfileBtn.Click += DeleteProfileBtn_Click;
-        _tips.SetToolTip(_duplicateBtn, "Copy the selected profile");
+        _tips.SetToolTip(_duplicateBtn, "Copy the selected layout");
         buttons.Controls.Add(_addProfileBtn);
         buttons.Controls.Add(_duplicateBtn);
         buttons.Controls.Add(_deleteProfileBtn);
         buttons.Controls.Add(_captureCurrentLayoutBtn);
 
-        _profileCardsPanel = new FlowLayoutPanel
+        _profileCardsPanel = new BufferedFlowPanel
         {
             Dock = DockStyle.Fill,
             BackColor = UiTheme.Bg,
@@ -338,6 +358,97 @@ public class ConfigForm : Form
         root.Controls.Add(spacer);
         root.Controls.Add(heading);
         return root;
+    }
+
+    /// <summary>
+    /// First-run state. With no saved layouts the editor is a set of disabled
+    /// controls around an empty canvas, which explains nothing. This draws the
+    /// monitors as they are right now and offers the single action that matters,
+    /// so the app's premise is demonstrated rather than described.
+    /// </summary>
+    private Control BuildEmptyState()
+    {
+        _emptyPanel = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.Panel, Visible = false };
+
+        var capture = UiTheme.MakeButton("Save this as my first layout", true, DpiScale);
+        capture.Size = new Size(S(260), S(40));
+        capture.Click += (_, _) => CaptureFirstLayout();
+        _emptyPanel.Controls.Add(capture);
+
+        _emptyPanel.Paint += (_, e) =>
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+            int w = Math.Min(S(520), _emptyPanel.Width - S(48));
+            int cx = _emptyPanel.Width / 2;
+            int top = Math.Max(S(24), _emptyPanel.Height / 2 - S(150));
+
+            var glyph = new RectangleF(cx - w / 2f, top, w, S(130));
+            LayoutGlyph.Draw(g, glyph, _liveForEmptyState,
+                onColor: Color.FromArgb(190, UiTheme.Text),
+                offColor: Color.FromArgb(110, UiTheme.Line),
+                primaryColor: _liveForEmptyState.Count > 1 ? UiTheme.GoldDim : Color.FromArgb(190, UiTheme.Text),
+                cornerRadius: 4f);
+
+            using var centre = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+            using var head = new Font("Segoe UI", 19f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel);
+            using var headBrush = new SolidBrush(UiTheme.Text);
+            g.DrawString(_liveForEmptyState.Count == 1
+                    ? "This is your monitor, right now."
+                    : $"These are your {_liveForEmptyState.Count} monitors, right now.",
+                head, headBrush, new RectangleF(cx - w / 2f, top + S(150), w, S(30)), centre);
+
+            using var sub = new Font("Segoe UI", 12f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel);
+            using var subBrush = new SolidBrush(UiTheme.Muted);
+            g.DrawString(_liveForEmptyState.Count == 1
+                    ? "Save it, then add more layouts as you connect more monitors."
+                    : "Save this arrangement, then make a second layout with some of them turned off.",
+                sub, subBrush, new RectangleF(cx - w / 2f, top + S(184), w, S(24)), centre);
+        };
+
+        _emptyPanel.Resize += (_, _) =>
+        {
+            int top = Math.Max(S(24), _emptyPanel.Height / 2 - S(150));
+            capture.Location = new Point((_emptyPanel.Width - capture.Width) / 2, top + S(212));
+            _emptyPanel.Invalidate();
+        };
+
+        return _emptyPanel;
+    }
+
+    private void CaptureFirstLayout()
+    {
+        var created = DisplayEngine.CaptureCurrentLayoutAsProfile("My layout", string.Empty);
+        _profiles.Add(created);
+        _selectedProfile = created;
+        MarkDirty();
+        FlushAutoSave();
+        RebuildProfileCards();
+        LoadSelectedProfile();
+        UpdateEmptyState();
+    }
+
+    private void UpdateEmptyState()
+    {
+        if (_emptyPanel == null || _editorChrome == null) return;
+
+        bool empty = _profiles.Count == 0;
+        if (empty)
+        {
+            _liveForEmptyState = DisplayEngine.GetCurrentDisplays().Where(d => d.IsAttached).ToList();
+        }
+
+        foreach (var c in _editorChrome) c.Visible = !empty;
+        _emptyPanel.Visible = empty;
+        if (empty)
+        {
+            _emptyPanel.BringToFront();
+            _emptyPanel.Invalidate();
+        }
+
+        // The footer's primary action has nothing to act on yet.
+        _applyBtn.Enabled = !empty;
     }
 
     private Control BuildEditor()
@@ -372,11 +483,15 @@ public class ConfigForm : Form
             TextAlign = ContentAlignment.MiddleLeft
         };
 
+        root.Controls.Add(BuildEmptyState());
         root.Controls.Add(_canvas);
         root.Controls.Add(_hotkeyHint);
         root.Controls.Add(inspector);
         root.Controls.Add(toolbar);
         root.Controls.Add(meta);
+
+        // Everything that only makes sense once a layout exists.
+        _editorChrome = new Control[] { _canvas, _hotkeyHint, inspector, toolbar, meta };
         return root;
     }
 
@@ -421,7 +536,7 @@ public class ConfigForm : Form
             BackColor = UiTheme.Panel
         };
 
-        var nameLabel = UiTheme.MakeEyebrow("PROFILE NAME", DpiScale);
+        var nameLabel = UiTheme.MakeEyebrow("LAYOUT NAME", DpiScale);
         nameLabel.Location = new Point(0, 0);
         nameLabel.Size = new Size(S(280), S(18));
 
@@ -484,7 +599,7 @@ public class ConfigForm : Form
         var panel = new Panel
         {
             Dock = DockStyle.Bottom,
-            Height = S(80),
+            Height = S(122),
             BackColor = UiTheme.Card
         };
         panel.Paint += (_, e) =>
@@ -512,7 +627,7 @@ public class ConfigForm : Form
 
         _includeToggle = new CheckBox
         {
-            Text = "Include in profile",
+            Text = "Include in layout",
             ForeColor = UiTheme.Text,
             Font = new Font("Segoe UI", 9f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel),
             AutoSize = true,
@@ -540,6 +655,27 @@ public class ConfigForm : Form
             if (_canvas.SelectedConfig != null) IdentifyOverlays.Show(_canvas.SelectedConfig.DeviceName);
         };
 
+        var resolutionLabel = UiTheme.MakeEyebrow("RESOLUTION", DpiScale);
+        resolutionLabel.SetBounds(S(14), S(70), S(120), S(16));
+
+        _resolutionBox = MakeCombo();
+        _resolutionBox.SetBounds(S(14), S(88), S(190), S(24));
+        _resolutionBox.SelectedIndexChanged += (_, _) => ResolutionChanged();
+
+        var refreshLabel = UiTheme.MakeEyebrow("REFRESH", DpiScale);
+        refreshLabel.SetBounds(S(218), S(70), S(120), S(16));
+
+        _refreshBox = MakeCombo();
+        _refreshBox.SetBounds(S(218), S(88), S(120), S(24));
+        _refreshBox.SelectedIndexChanged += (_, _) => RefreshRateChanged();
+
+        var scaleLabel = UiTheme.MakeEyebrow("SCALE", DpiScale);
+        scaleLabel.SetBounds(S(352), S(70), S(120), S(16));
+
+        _scaleBox = MakeCombo();
+        _scaleBox.SetBounds(S(352), S(88), S(150), S(24));
+        _scaleBox.SelectedIndexChanged += (_, _) => ScaleChanged();
+
         panel.Resize += (_, _) =>
         {
             int right = panel.Width - S(14);
@@ -556,7 +692,125 @@ public class ConfigForm : Form
         panel.Controls.Add(_includeToggle);
         panel.Controls.Add(_primaryBtn);
         panel.Controls.Add(_identifyOneBtn);
+        panel.Controls.Add(resolutionLabel);
+        panel.Controls.Add(_resolutionBox);
+        panel.Controls.Add(refreshLabel);
+        panel.Controls.Add(_refreshBox);
+        panel.Controls.Add(scaleLabel);
+        panel.Controls.Add(_scaleBox);
         return panel;
+    }
+
+    private ComboBox MakeCombo() => new()
+    {
+        DropDownStyle = ComboBoxStyle.DropDownList,
+        FlatStyle = FlatStyle.Flat,
+        BackColor = UiTheme.Input,
+        ForeColor = UiTheme.Text,
+        Font = new Font("Segoe UI", 9.5f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel)
+    };
+
+    /// <summary>The mode list for the selected monitor, cached for the current selection.</summary>
+    private List<DisplayModes.Mode> ModesFor(DisplayTargetConfig cfg)
+    {
+        string? gdi = DisplayEngine.GetCurrentDisplays()
+            .FirstOrDefault(d => DisplayEngine.SameHardwareIdentity(d.MonitorDevicePath, cfg.MonitorDevicePath) && d.IsAttached)
+            ?.DeviceName;
+        return DisplayModes.For(cfg, gdi);
+    }
+
+    private void ResolutionChanged()
+    {
+        if (_syncingInspector) return;
+        var cfg = _canvas.SelectedConfig;
+        if (cfg == null || _resolutionBox.SelectedItem is not ResolutionChoice choice) return;
+        if (cfg.Width == choice.W && cfg.Height == choice.H) return;
+
+        cfg.Width = choice.W;
+        cfg.Height = choice.H;
+
+        // The saved timings describe the old mode, so they cannot be reused — a target
+        // mode contradicting the new size is worse than none at all. Clearing them
+        // makes the apply request a mode by size and refresh rate instead, which is
+        // the documented way to ask for one.
+        cfg.HasTargetMode = false;
+
+        // Take the best rate the monitor can do at the new size rather than dropping
+        // to whatever Windows picks — going from 4K144 to 1440p and silently landing
+        // on 60Hz is a bad surprise.
+        int best = DisplayModes.BestRateFor(ModesFor(cfg), choice.W, choice.H);
+        SetRefresh(cfg, best);
+
+        _canvas.RefreshLayoutGeometry();
+        MarkDirty();
+        UpdateInspector();
+    }
+
+    private void RefreshRateChanged()
+    {
+        if (_syncingInspector) return;
+        var cfg = _canvas.SelectedConfig;
+        if (cfg == null || _refreshBox.SelectedItem is not RefreshChoice choice) return;
+        if (cfg.RefreshRate == choice.Hz) return;
+
+        SetRefresh(cfg, choice.Hz);
+
+        // The captured timings are for the old rate; asking by rate is what we want now.
+        cfg.HasTargetMode = false;
+        InvalidateProfileCards();
+        MarkDirty();
+        UpdateInspector();
+    }
+
+    /// <summary>
+    /// Records a refresh rate as the exact rational CCD wants. A whole number is
+    /// correct here even though real modes are often 143.998Hz: with no target mode
+    /// supplied, this rate is a request that Windows matches against the modes the
+    /// hardware genuinely has, rather than a timing we are asserting.
+    /// </summary>
+    private static void SetRefresh(DisplayTargetConfig cfg, int hz)
+    {
+        cfg.RefreshRate = hz;
+        cfg.RefreshNumerator = hz > 0 ? (uint)hz : 0;
+        cfg.RefreshDenominator = hz > 0 ? 1u : 0;
+    }
+
+    private void ScaleChanged()
+    {
+        if (_syncingInspector) return;
+        var cfg = _canvas.SelectedConfig;
+        if (cfg == null || _scaleBox.SelectedItem is not ScaleChoice choice) return;
+        if (cfg.ScalePercent == choice.Percent) return;
+
+        cfg.ScalePercent = choice.Percent;
+        InvalidateProfileCards();
+        MarkDirty();
+        UpdateInspector();
+    }
+
+    private sealed record ResolutionChoice(int W, int H, bool Native)
+    {
+        public override string ToString() => Native ? $"{W} × {H}  (native)" : $"{W} × {H}";
+    }
+
+    private sealed record RefreshChoice(int Hz, int Current = 0)
+    {
+        public override string ToString() => Hz == Current ? $"{Hz} Hz  (now)" : $"{Hz} Hz";
+    }
+
+    private sealed record ScaleChoice(int Percent, int Current = 0, int Recommended = 0)
+    {
+        public override string ToString()
+        {
+            if (Percent == 0)
+            {
+                // Naming the value it leaves alone turns a vague option into a fact.
+                return Current > 0 ? $"Leave unchanged  ({Current}% now)" : "Leave unchanged";
+            }
+
+            string note = Percent == Recommended ? "  (recommended)" : string.Empty;
+            return $"{Percent}%{note}";
+        }
     }
 
     private Control BuildFooter()
@@ -645,7 +899,7 @@ public class ConfigForm : Form
         foreach (var profile in _profiles)
         {
             bool selected = _selectedProfile?.Id == profile.Id;
-            var card = new Panel
+            var card = new BufferedPanel
             {
                 Height = S(74),
                 BackColor = selected ? UiTheme.CardActive : UiTheme.Card,
@@ -712,6 +966,7 @@ public class ConfigForm : Form
         SizeProfileCards();
         _profileCardsPanel.ResumeLayout();
         RefreshActiveBadges();
+        UpdateEmptyState();
     }
 
     private void UpdateCardSelectionStyles()
@@ -828,23 +1083,104 @@ public class ConfigForm : Form
             _includeToggle.Checked = false;
             _primaryBtn.Enabled = false;
             _identifyOneBtn.Enabled = false;
+            _live = null;
+            _resolutionBox.Enabled = false;
+            _refreshBox.Enabled = false;
+            _scaleBox.Enabled = false;
+            _resolutionBox.Items.Clear();
+            _refreshBox.Items.Clear();
+            _scaleBox.Items.Clear();
         }
         else
         {
             _inspectorTitle.Text = string.IsNullOrWhiteSpace(sel.MonitorId) ? sel.DeviceName : sel.MonitorId;
-            string hz = sel.RefreshRate > 0 ? $" @ {sel.RefreshRate}Hz" : "";
+
             var liveDisplays = DisplayEngine.GetCurrentDisplays();
-            bool connected = liveDisplays.Any(d =>
+            _live = liveDisplays.FirstOrDefault(d =>
                 DisplayEngine.SameHardwareIdentity(d.MonitorDevicePath, sel.MonitorDevicePath));
-            string link = connected ? "Connected" : "Not connected";
-            _inspectorSub.Text = $"{sel.Width} × {sel.Height}{hz}  ·  {link}" + (sel.IsPrimary ? "  ·  Main" : "");
+
+            // Prefer what the layout specifies; fall back to what Windows reports, so
+            // a value we can actually read is never hidden just because the layout has
+            // no opinion about it.
+            int hz = sel.RefreshRate > 0 ? sel.RefreshRate : (_live?.RefreshRate ?? 0);
+            int scale = sel.ScalePercent > 0 ? sel.ScalePercent : (_live?.ScalePercent ?? 0);
+
+            var parts = new List<string> { $"{sel.Width} × {sel.Height}" };
+            if (hz > 0) parts.Add($"{hz} Hz");
+            if (scale > 0) parts.Add($"{scale}% scale");
+            if (sel.NativeWidth > 0) parts.Add($"native {sel.NativeWidth} × {sel.NativeHeight}");
+            parts.Add(_live != null ? "Connected" : "Not connected");
+            if (sel.IsPrimary) parts.Add("Main");
+
+            _inspectorSub.Text = string.Join("  ·  ", parts);
             _includeToggle.Enabled = true;
             _includeToggle.Checked = sel.Enabled;
             _primaryBtn.Enabled = sel.Enabled && !sel.IsPrimary;
             _primaryBtn.Text = sel.IsPrimary ? "Main display" : "Set as main";
             _identifyOneBtn.Enabled = true;
+            PopulateModes(sel);
+            PopulateScale(sel);
         }
         _syncingInspector = false;
+    }
+
+    private void PopulateModes(DisplayTargetConfig sel)
+    {
+        var modes = ModesFor(sel);
+
+        _resolutionBox.Enabled = true;
+        _resolutionBox.Items.Clear();
+        foreach (var (w, h) in DisplayModes.Resolutions(modes))
+        {
+            _resolutionBox.Items.Add(new ResolutionChoice(w, h, w == sel.NativeWidth && h == sel.NativeHeight));
+        }
+        Select(_resolutionBox, i => i is ResolutionChoice c && c.W == sel.Width && c.H == sel.Height);
+
+        _refreshBox.Enabled = true;
+        _refreshBox.Items.Clear();
+        int liveHz = _live?.RefreshRate ?? 0;
+        foreach (int hz in DisplayModes.RatesFor(modes, sel.Width, sel.Height))
+        {
+            _refreshBox.Items.Add(new RefreshChoice(hz, liveHz));
+        }
+        Select(_refreshBox, i => i is RefreshChoice c && c.Hz == sel.RefreshRate);
+
+        static void Select(ComboBox box, Func<object?, bool> match)
+        {
+            for (int i = 0; i < box.Items.Count; i++)
+            {
+                if (match(box.Items[i])) { box.SelectedIndex = i; return; }
+            }
+            if (box.Items.Count > 0) box.SelectedIndex = 0;
+        }
+    }
+
+    private void PopulateScale(DisplayTargetConfig sel)
+    {
+        _scaleBox.Enabled = true;
+        _scaleBox.Items.Clear();
+
+        // "Leave unchanged" is the default and is not the same as any percentage:
+        // it means the layout has no opinion, so switching to it will not touch
+        // whatever scaling the monitor already has.
+        int current = _live?.ScalePercent ?? 0;
+        int recommended = _live?.RecommendedScalePercent ?? 0;
+        _scaleBox.Items.Add(new ScaleChoice(0, current, recommended));
+        foreach (int percent in Ccd.DpiScaleSteps)
+        {
+            _scaleBox.Items.Add(new ScaleChoice(percent, current, recommended));
+        }
+
+        for (int i = 0; i < _scaleBox.Items.Count; i++)
+        {
+            if (_scaleBox.Items[i] is ScaleChoice c && c.Percent == sel.ScalePercent)
+            {
+                _scaleBox.SelectedIndex = i;
+                return;
+            }
+        }
+
+        _scaleBox.SelectedIndex = 0;
     }
 
     private void StartHotkeyCapture()
@@ -897,22 +1233,20 @@ public class ConfigForm : Form
 
     private void DeleteProfileBtn_Click(object? sender, EventArgs e)
     {
-        if (_selectedProfile != null && _profiles.Count > 1)
-        {
-            string name = _selectedProfile.Name;
-            _profiles.Remove(_selectedProfile);
-            _selectedProfile = _profiles[0];
-            RebuildProfileCards();
-            LoadSelectedProfile();
-            MarkDirty();
-            _feedbackLabel.ForeColor = UiTheme.Gold;
-            _feedbackLabel.Text = $"Deleted '{name}'.";
-        }
-        else
-        {
-            _feedbackLabel.ForeColor = UiTheme.Danger;
-            _feedbackLabel.Text = "Cannot delete the only profile.";
-        }
+        if (_selectedProfile == null) return;
+
+        // Deleting the last layout is allowed. The app starts with none and has a
+        // first-run state for exactly that, so refusing to let the user get back
+        // there was the editor disagreeing with the rest of the app.
+        string name = _selectedProfile.Name;
+        _profiles.Remove(_selectedProfile);
+        _selectedProfile = _profiles.FirstOrDefault();
+
+        RebuildProfileCards();
+        LoadSelectedProfile();
+        MarkDirty();
+        _feedbackLabel.ForeColor = UiTheme.Gold;
+        _feedbackLabel.Text = $"Deleted '{name}'.";
     }
 
     private void CaptureCurrentLayoutBtn_Click(object? sender, EventArgs e)
@@ -971,6 +1305,9 @@ public class ConfigForm : Form
         return timer;
     }
 
+    /// <summary>Writes any pending edits to disk immediately.</summary>
+    public void FlushPendingEdits() => FlushAutoSave();
+
     /// <summary>Writes pending edits immediately. Called on close so nothing is lost
     /// inside the debounce window.</summary>
     private void FlushAutoSave()
@@ -987,23 +1324,6 @@ public class ConfigForm : Form
 
         _onSaveCallback?.Invoke();
         MarkClean();
-        RefreshActiveBadges();
-    }
-
-    private void SaveProfilesOnly()
-    {
-        if (!ProfileManager.TrySaveProfiles(_profiles, out string error))
-        {
-            _feedbackLabel.ForeColor = UiTheme.Danger;
-            _feedbackLabel.Text = error;
-            return;
-        }
-
-        _onSaveCallback?.Invoke();
-        MarkClean();
-        _feedbackLabel.ForeColor = UiTheme.Ok;
-        _feedbackLabel.Text = "Saved profiles.";
-        RefreshActiveBadges();
     }
 
     private void ApplySelected()
@@ -1047,6 +1367,8 @@ public class ConfigForm : Form
 
     private void RefreshDisplays()
     {
+        DisplayModes.Invalidate();
+        CcdEngine.InvalidateCaches();
         _canvas.RefreshHardware();
         UpdateInspector();
         RefreshActiveBadges();
@@ -1094,7 +1416,12 @@ public class ConfigForm : Form
         foreach (var view in _cardViews)
         {
             string hotkey = string.IsNullOrWhiteSpace(view.Profile.Hotkey) ? "No shortcut" : view.Profile.Hotkey;
-            view.SubLabel.Text = live?.Id == view.Profile.Id ? $"{hotkey}  ·  LIVE" : hotkey;
+            string text = live?.Id == view.Profile.Id ? $"{hotkey}  ·  LIVE" : hotkey;
+
+            // Assigning the same text still raises TextChanged and repaints; skipping
+            // the no-op is what stops the card list flickering on every tick.
+            if (view.SubLabel.Text == text) continue;
+            view.SubLabel.Text = text;
             view.CardPanel.Invalidate();
         }
         UpdateWindowTitle();
@@ -1105,6 +1432,8 @@ public class ConfigForm : Form
     private void OnDisplaySettingsChanged(object? sender, EventArgs e)
     {
         if (IsDisposed || !IsHandleCreated) return;
+        DisplayModes.Invalidate();
+        CcdEngine.InvalidateCaches();
         BeginInvoke(() => _canvas.RefreshHardware());
     }
 

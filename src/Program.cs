@@ -95,6 +95,44 @@ internal static class Program
             return;
         }
 
+        if (args.Length > 0 && args[0].Equals("--set-scale", StringComparison.OrdinalIgnoreCase))
+        {
+            RunDiagnostic(args, () =>
+            {
+                int percent = args.Length > 1 && int.TryParse(args[1], out int p) ? p : 100;
+                Console.WriteLine(CcdEngine.TestScale(percent));
+            });
+            return;
+        }
+
+        if (args.Length > 0 && args[0].Equals("--set-refresh", StringComparison.OrdinalIgnoreCase))
+        {
+            // Captures the live layout, changes the primary's refresh rate the same way
+            // the editor does, and applies it — so this exercises the real apply path.
+            RunDiagnostic(args, () =>
+            {
+                int hz = args.Length > 1 && int.TryParse(args[1], out int h) ? h : 60;
+                var profile = DisplayEngine.CaptureCurrentLayoutAsProfile("refresh test", string.Empty);
+                var primary = profile.Displays.FirstOrDefault(d => d.IsPrimary && d.Enabled)
+                              ?? profile.Displays.FirstOrDefault(d => d.Enabled);
+                if (primary == null) { Console.WriteLine("No enabled display."); return; }
+
+                Console.WriteLine($"{primary.MonitorId}: {primary.Width}x{primary.Height} @ {primary.RefreshRate}Hz -> requesting {hz}Hz");
+                primary.HasTargetMode = false;
+                primary.RefreshRate = hz;
+                primary.RefreshNumerator = (uint)hz;
+                primary.RefreshDenominator = 1;
+
+                bool ok = DisplayEngine.ApplyProfile(profile, out string err);
+                Console.WriteLine(ok ? "apply: OK" : $"apply FAILED: {err}");
+
+                var now = DisplayEngine.GetCurrentDisplays()
+                    .FirstOrDefault(d => DisplayEngine.SameHardwareIdentity(d.MonitorDevicePath, primary.MonitorDevicePath));
+                Console.WriteLine($"now: {now?.Width}x{now?.Height} @ {now?.RefreshRate}Hz");
+            });
+            return;
+        }
+
         if (args.Length > 0 && args[0].Equals("--capture", StringComparison.OrdinalIgnoreCase))
         {
             RunDiagnostic(args, () =>
@@ -168,6 +206,14 @@ internal static class Program
             string profileName = args.Length > 1 ? args[1] : profiles[0].Name;
             var target = profiles.FirstOrDefault(p => p.Name.Equals(profileName, StringComparison.OrdinalIgnoreCase)) ?? profiles[0];
             Console.WriteLine($"Validating profile: '{target.Name}' with {target.Displays.Count} displays ({target.Displays.Count(d => d.Enabled)} enabled)");
+            // Whether the desktop already matches is what the editor's Apply button
+            // gates on, so it belongs in the same report.
+            Console.WriteLine($"Already active (MatchesCurrent): {DisplayEngine.MatchesCurrent(target)}");
+            foreach (var d in target.Displays.Where(d => d.Enabled))
+            {
+                Console.WriteLine($"    wants {d.MonitorId}: {d.Width}x{d.Height} @ {d.RefreshRate}Hz" +
+                                  $"{(d.ScalePercent > 0 ? $" · {d.ScalePercent}%" : "")}");
+            }
             bool ok = DisplayEngine.ValidateProfile(target, out string err);
             Console.WriteLine(ok ? "Validation SUCCESS (no display changes made)." : $"Validation FAILED: {err}");
             });
@@ -177,6 +223,35 @@ internal static class Program
         // Everything below needs WinForms; the diagnostics above deliberately do not,
         // so they stay runnable even when UI initialisation would block.
         ApplicationConfiguration.Initialize();
+
+        if (args.Length > 0 && args[0].Equals("--screenshot-hud", StringComparison.OrdinalIgnoreCase))
+        {
+            var profiles = ProfileManager.LoadProfiles();
+            var target = profiles.FirstOrDefault(p => p.Displays.Count > 0) ?? profiles.FirstOrDefault();
+            var displays = target?.Displays ?? DisplayEngine.CaptureTargets();
+            using var hud = KeepLayoutDialog.CreateForCapture(target?.Name ?? "Preview", displays, LayoutSafety.UndoSeconds);
+            using var bmp = new Bitmap(hud.Width, hud.Height);
+            using (var g = Graphics.FromImage(bmp)) hud.Render(g);
+            string outPath = args.Length > 1 ? args[1] : "hud-preview.png";
+            bmp.Save(outPath, System.Drawing.Imaging.ImageFormat.Png);
+            Console.WriteLine($"HUD preview saved to {outPath} ({hud.Width}x{hud.Height})");
+            return;
+        }
+
+        if (args.Length > 0 && args[0].Equals("--screenshot-menu", StringComparison.OrdinalIgnoreCase))
+        {
+            // Renders the tray popup to a file. The popup is a window we draw
+            // ourselves, so unlike a ContextMenuStrip it can be captured and checked.
+            var profiles = ProfileManager.LoadProfiles();
+            var entries = TrayContext.BuildPreviewEntries(profiles);
+            using var popup = TrayPopup.CreateForCapture(entries, 1f);
+            using var bmp = new Bitmap(popup.Width, popup.Height);
+            using (var g = Graphics.FromImage(bmp)) popup.Render(g);
+            string outPath = args.Length > 1 ? args[1] : "tray-menu-preview.png";
+            bmp.Save(outPath, System.Drawing.Imaging.ImageFormat.Png);
+            Console.WriteLine($"Tray menu preview saved to {outPath} ({popup.Width}x{popup.Height})");
+            return;
+        }
 
         if (args.Length > 0 && args[0].Equals("--screenshot", StringComparison.OrdinalIgnoreCase))
         {

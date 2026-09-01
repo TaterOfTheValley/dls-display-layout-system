@@ -48,8 +48,20 @@ internal static class Ccd
     // DisplayConfigGetDeviceInfo request types
     public const uint DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME = 1;
     public const uint DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_NAME = 2;
+    public const uint DISPLAYCONFIG_DEVICE_INFO_GET_TARGET_PREFERRED_MODE = 3;
+
+    // Per-monitor DPI. These two are undocumented — Windows exposes no supported API
+    // for reading or setting display scaling, and the Settings app uses these. They
+    // have been stable since Windows 10 1607, but treat every call as best-effort and
+    // never let a failure here fail a layout switch.
+    public const uint DISPLAYCONFIG_DEVICE_INFO_GET_DPI_SCALE = unchecked((uint)-3);
+    public const uint DISPLAYCONFIG_DEVICE_INFO_SET_DPI_SCALE = unchecked((uint)-4);
 
     public const uint DISPLAYCONFIG_PIXELFORMAT_32BPP = 4;
+
+    /// <summary>The scaling percentages Windows offers, in order. The API works in
+    /// steps through this table rather than in percentages.</summary>
+    public static readonly int[] DpiScaleSteps = { 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500 };
 
     // Win32 error codes returned directly (not HRESULTs) by these APIs.
     public const int ERROR_SUCCESS = 0;
@@ -227,6 +239,42 @@ internal struct DISPLAYCONFIG_TARGET_DEVICE_NAME
     public string monitorDevicePath;
 }
 
+// 80 bytes, not 76: header(20) + width(4) + height(4) leaves 28, and targetMode
+// contains a UINT64 so it must start 8-aligned — the compiler inserts 4 bytes of
+// padding, and the native struct is padded identically.
+// The monitor's native mode, available even while the output is inactive —
+// which is the only way to learn that a currently-disabled panel is 4K rather than
+// guessing 1080p.
+[StructLayout(LayoutKind.Sequential)]
+internal struct DISPLAYCONFIG_TARGET_PREFERRED_MODE
+{
+    public DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+    public uint width;
+    public uint height;
+    public DISPLAYCONFIG_TARGET_MODE targetMode;
+}
+
+// 32 bytes. Scale is expressed relative to the value Windows recommends for the
+// panel, not as an absolute percentage: minScaleRel is how many steps below the
+// recommendation you may go, so the recommended entry sits at index -minScaleRel
+// in Ccd.DpiScaleSteps.
+[StructLayout(LayoutKind.Sequential)]
+internal struct DISPLAYCONFIG_SOURCE_DPI_SCALE_GET
+{
+    public DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+    public int minScaleRel;
+    public int curScaleRel;
+    public int maxScaleRel;
+}
+
+// 24 bytes.
+[StructLayout(LayoutKind.Sequential)]
+internal struct DISPLAYCONFIG_SOURCE_DPI_SCALE_SET
+{
+    public DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+    public int scaleRel;
+}
+
 [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
 internal struct DISPLAYCONFIG_SOURCE_DEVICE_NAME
 {
@@ -268,6 +316,15 @@ internal static class CcdNative
     [DllImport("user32.dll")]
     internal static extern int DisplayConfigGetDeviceInfo(ref DISPLAYCONFIG_SOURCE_DEVICE_NAME requestPacket);
 
+    [DllImport("user32.dll")]
+    internal static extern int DisplayConfigGetDeviceInfo(ref DISPLAYCONFIG_TARGET_PREFERRED_MODE requestPacket);
+
+    [DllImport("user32.dll")]
+    internal static extern int DisplayConfigGetDeviceInfo(ref DISPLAYCONFIG_SOURCE_DPI_SCALE_GET requestPacket);
+
+    [DllImport("user32.dll")]
+    internal static extern int DisplayConfigSetDeviceInfo(ref DISPLAYCONFIG_SOURCE_DPI_SCALE_SET requestPacket);
+
     /// <summary>
     /// Verifies the P/Invoke struct layouts against the sizes winuser.h defines on
     /// x64. A mismatch here corrupts every subsequent call in ways that surface as
@@ -285,6 +342,9 @@ internal static class CcdNative
         Check<DISPLAYCONFIG_DEVICE_INFO_HEADER>(20);
         Check<DISPLAYCONFIG_TARGET_DEVICE_NAME>(420);
         Check<DISPLAYCONFIG_SOURCE_DEVICE_NAME>(84);
+        Check<DISPLAYCONFIG_TARGET_PREFERRED_MODE>(80);
+        Check<DISPLAYCONFIG_SOURCE_DPI_SCALE_GET>(32);
+        Check<DISPLAYCONFIG_SOURCE_DPI_SCALE_SET>(24);
 
         static void Check<T>(int expected) where T : struct
         {

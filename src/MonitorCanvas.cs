@@ -10,6 +10,11 @@ internal sealed class MonitorCanvas : Control
         public DisplayTargetConfig Config { get; init; } = null!;
         public int Number { get; set; }
         public bool Present { get; set; }
+
+        /// <summary>What Windows reports for this monitor right now, when it is
+        /// attached. Lets the tile show a real refresh rate and scale even when the
+        /// layout itself has no opinion about them.</summary>
+        public DisplayInfo? Live { get; set; }
         public Rectangle DrawRect;
         public bool Hovered;
     }
@@ -69,6 +74,16 @@ internal sealed class MonitorCanvas : Control
         RecalcLayout();
         Invalidate();
         SelectionChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>Re-lays out after a monitor's resolution was changed from the
+    /// inspector. Does not raise LayoutChanged — the caller already recorded the edit,
+    /// and re-entering the inspector update from here would loop.</summary>
+    public void RefreshLayoutGeometry()
+    {
+        RebuildItems();
+        RecalcLayout();
+        Invalidate();
     }
 
     public void FitView()
@@ -202,11 +217,13 @@ internal sealed class MonitorCanvas : Control
 
         foreach (var cfg in _profile.Displays)
         {
+            var live = FindHardware(cfg);
             _items.Add(new CanvasItem
             {
                 Config = cfg,
                 Number = numbers.TryGetValue(cfg.MonitorDevicePath, out int num) ? num : n++,
-                Present = FindHardware(cfg) != null
+                Present = live != null,
+                Live = live
             });
         }
     }
@@ -415,6 +432,15 @@ internal sealed class MonitorCanvas : Control
         }
 
         string sub = $"{item.Config.Width} × {item.Config.Height}";
+
+        int hz = item.Config.RefreshRate > 0 ? item.Config.RefreshRate : (item.Live?.RefreshRate ?? 0);
+        if (hz > 0) sub += $"  ·  {hz} Hz";
+
+        // Scaling is only readable for an attached monitor, and a layout that says
+        // nothing about it still runs at whatever Windows has — so show the live
+        // value rather than leaving the card silent about it.
+        int scale = item.Config.ScalePercent > 0 ? item.Config.ScalePercent : (item.Live?.ScalePercent ?? 0);
+        if (scale > 0) sub += $"  ·  {scale}%";
         float subY = titleY + S(18);
         if (enabled && subY + S(14) < r.Bottom - S(4))
         {
@@ -456,7 +482,7 @@ internal sealed class MonitorCanvas : Control
         using var brush = new SolidBrush(_overShelf ? UiTheme.Danger : UiTheme.Muted);
         string label = _overShelf
             ? "DROP TO REMOVE FROM THIS PROFILE"
-            : "UNUSED IN THIS PROFILE  ·  drag onto the canvas to include";
+            : "NOT IN THIS LAYOUT  ·  drag onto the canvas to include";
         g.DrawString(label, font, brush, Pad, shelfTop + S(8));
     }
 
