@@ -2,14 +2,13 @@
 bin/
 obj/
 
-# dist/ is intentionally NOT ignored: with no CI or release pipeline, the checked-in
-# binary in dist/ is how this app is distributed.
+# Local publish output. Releases are built by .github/workflows/release.yml from a
+# version tag and attached to the GitHub release, so a binary in the repo would only
+# ever be a stale copy of one.
+dist/
 
 # Local profile data. Machine-specific: it holds this PC's monitor device paths.
 profiles.json
 
 # Diagnostic captures
 *.user
-
-# Debug symbols for the distributed build.
-dist/*.pdb

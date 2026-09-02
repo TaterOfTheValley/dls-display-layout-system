@@ -31,7 +31,6 @@ public static class DisplayClone
         Id = newId ? Guid.NewGuid().ToString("N") : profile.Id,
         Name = profile.Name,
         Hotkey = profile.Hotkey,
-        SchemaVersion = profile.SchemaVersion,
         Displays = profile.Displays.Select(d => d.Clone()).ToList()
     };
 
@@ -43,23 +42,22 @@ public static class DisplayClone
 
 public class DisplayProfile
 {
-    /// <summary>
-    /// 1 = the original ChangeDisplaySettingsEx-era schema, identified monitors by a
-    /// parsed EnumDisplayDevices key. That key could not tell two same-model monitors
-    /// apart, so v1 profiles are not migrated — they are marked for re-capture.
-    /// 2 = CCD schema, identified by monitorDevicePath.
-    /// </summary>
-    public const int CurrentSchemaVersion = 2;
-
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Name { get; set; } = string.Empty;
     public string Hotkey { get; set; } = string.Empty; // e.g., "Ctrl+Alt+1"
-    public int SchemaVersion { get; set; } = CurrentSchemaVersion;
     public List<DisplayTargetConfig> Displays { get; set; } = new();
 
-    /// <summary>True when this profile predates CCD identity and must be re-captured.</summary>
+    /// <summary>
+    /// True when this layout cannot identify its monitors and must be re-captured.
+    ///
+    /// Derived from the data rather than stored as a version number: a layout is
+    /// unusable precisely when a target has no device path, so reading that directly
+    /// cannot disagree with the data the way a persisted flag eventually would. It is
+    /// also never written to the settings file.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
     public bool NeedsRecapture =>
-        SchemaVersion < CurrentSchemaVersion ||
+        Displays.Count == 0 ||
         Displays.Any(d => string.IsNullOrWhiteSpace(d.MonitorDevicePath));
 }
 
@@ -252,7 +250,6 @@ public static class DisplayEngine
     {
         Name = profileName,
         Hotkey = hotkey,
-        SchemaVersion = DisplayProfile.CurrentSchemaVersion,
         Displays = CcdEngine.Capture()
     };
 

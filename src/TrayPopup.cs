@@ -35,6 +35,10 @@ internal sealed class TrayPopup : Form
         public required string Text;
         public string? Detail;
         public bool Emphasis;
+
+        /// <summary>Null for a plain command; true/false draws a checkbox, so
+        /// settings and actions can share one list without looking alike.</summary>
+        public bool? Checked;
     }
 
     internal sealed class SeparatorEntry : Entry
@@ -153,7 +157,8 @@ internal sealed class TrayPopup : Form
                     int detail = string.IsNullOrWhiteSpace(command.Detail)
                         ? 0
                         : (int)Math.Ceiling(g.MeasureString(command.Detail, subFont).Width) + S(18);
-                    widest = Math.Max(widest, S(PadX) + S(6) + text + detail + S(PadX));
+                    int checkbox = command.Checked.HasValue ? S(27) : 0;
+                    widest = Math.Max(widest, S(PadX) + S(6) + checkbox + text + detail + S(PadX));
                     break;
                 }
                 case HeadingEntry heading:
@@ -295,6 +300,35 @@ internal sealed class TrayPopup : Form
     {
         if (hot && entry.Enabled) FillHot(g, row);
 
+        int textLeft = S(PadX) + S(6);
+
+        if (entry.Checked is { } isChecked)
+        {
+            int box = S(13);
+            var b = new Rectangle(S(PadX) + S(4), row.Y + (row.Height - box) / 2, box, box);
+
+            using (var pen = new Pen(isChecked ? UiTheme.Gold : UiTheme.Line))
+                g.DrawRectangle(pen, b);
+
+            if (isChecked)
+            {
+                using var tick = new Pen(UiTheme.Gold, Math.Max(1.4f, box * 0.16f))
+                {
+                    StartCap = LineCap.Round,
+                    EndCap = LineCap.Round,
+                    LineJoin = LineJoin.Round
+                };
+                g.DrawLines(tick, new[]
+                {
+                    new PointF(b.Left + box * 0.22f, b.Top + box * 0.52f),
+                    new PointF(b.Left + box * 0.42f, b.Top + box * 0.74f),
+                    new PointF(b.Left + box * 0.80f, b.Top + box * 0.26f)
+                });
+            }
+
+            textLeft = b.Right + S(10);
+        }
+
         using var font = CommandFont();
         using var ink = new SolidBrush(entry.Enabled
             ? (entry.Emphasis ? UiTheme.Gold : UiTheme.Text)
@@ -307,7 +341,7 @@ internal sealed class TrayPopup : Form
         };
 
         g.DrawString(entry.Text, font, ink,
-            new RectangleF(S(PadX) + S(6), row.Y, Width - S(PadX) * 2 - S(6), row.Height), left);
+            new RectangleF(textLeft, row.Y, Width - textLeft - S(PadX), row.Height), left);
 
         if (!string.IsNullOrWhiteSpace(entry.Detail))
         {

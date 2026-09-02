@@ -98,7 +98,7 @@ public class ConfigForm : Form
         Font = new Font("Segoe UI", 9.5f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel);
         DoubleBuffered = true;
         KeyPreview = true;
-        Text = "Monitor Layout Switcher";
+        Text = AppInfo.Name;
         Icon = AppIcon.Shared;
         Padding = new Padding(0);
 
@@ -1436,7 +1436,7 @@ public class ConfigForm : Form
         string star = "";
         var live = DisplayEngine.FindMatchingProfile(_profiles);
         string active = live != null ? $"  —  {live.Name} is active" : "";
-        Text = "Monitor Layout Switcher" + star + active;
+        Text = AppInfo.Name + star + active;
     }
 
     private void RefreshActiveBadges()

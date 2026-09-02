@@ -24,7 +24,7 @@ public class TrayContext : ApplicationContext
         _notifyIcon = new NotifyIcon
         {
             Icon = AppIcon.Shared,
-            Text = "Monitor Layout Switcher",
+            Text = AppInfo.Name,
             Visible = true
         };
 
@@ -41,7 +41,9 @@ public class TrayContext : ApplicationContext
         };
 
         _lastHandledProfileSignature = GetProfileSignature();
-        _profileWatcher = new FileSystemWatcher(AppDomain.CurrentDomain.BaseDirectory, "profiles.json")
+        // Watch wherever settings actually live now, not the executable's folder.
+        _profileWatcher = new FileSystemWatcher(
+            AppPaths.SettingsDirectory, Path.GetFileName(AppPaths.SettingsFile))
         {
             NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.FileName,
             EnableRaisingEvents = true
@@ -66,6 +68,13 @@ public class TrayContext : ApplicationContext
         // a monitor plugged or unplugged, a driver event. Without this the tray shows
         // a checkmark against a profile that is no longer live.
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+
+        // Anything the settings load wants the user to know — an upgraded file format,
+        // or a file written by a newer build that was backed up before use.
+        if (!string.IsNullOrWhiteSpace(ProfileManager.LastNotice))
+        {
+            _notifyIcon.ShowBalloonTip(6000, AppInfo.Name, ProfileManager.LastNotice, ToolTipIcon.Info);
+        }
 
         LayoutSafety.UndoStateChanged += (_, _) =>
         {
@@ -155,10 +164,6 @@ public class TrayContext : ApplicationContext
     }
 
     /// <summary>
-    /// Rebuilds the tray entries and re-registers global hotkeys. Called before each
-    /// open, so the live marker and the undo countdown are always current.
-    /// </summary>
-    /// <summary>
     /// Re-registers global hotkeys. Split out from the menu rebuild because it needs
     /// no display query: an editor autosave has to refresh hotkeys, and doing it
     /// through the full menu rebuild meant enumerating every display path each time
@@ -242,9 +247,38 @@ public class TrayContext : ApplicationContext
 
         entries.Add(new TrayPopup.CommandEntry { Text = "Edit layouts\u2026", Invoke = ShowConfigWindow });
         entries.Add(new TrayPopup.SeparatorEntry());
+
+        var startup = StartupRegistration.Current;
+        entries.Add(new TrayPopup.CommandEntry
+        {
+            Text = "Start with Windows",
+            Checked = startup == StartupRegistration.State.On,
+            Detail = startup == StartupRegistration.State.BlockedByWindows ? "blocked in Task Manager" : null,
+            // A Task Manager "Disable" can only be undone in Task Manager — rewriting
+            // the Run key would leave the tick on while Windows still refused to start
+            // the app, which is worse than not offering the toggle.
+            Enabled = startup != StartupRegistration.State.BlockedByWindows,
+            Invoke = ToggleStartup
+        });
+
         entries.Add(new TrayPopup.CommandEntry { Text = "Exit", Invoke = ExitThread });
 
         _entries = entries;
+    }
+
+    private void ToggleStartup()
+    {
+        bool wanted = !StartupRegistration.IsEnabled;
+        if (!StartupRegistration.Set(wanted, out string error))
+        {
+            _notifyIcon.ShowBalloonTip(4000, AppInfo.Name + " — Failed",
+                $"Could not change the startup setting: {error}", ToolTipIcon.Error);
+            return;
+        }
+
+        RefreshMenuAndHotkeys();
+        _notifyIcon.ShowBalloonTip(2000, AppInfo.Name,
+            wanted ? "Will start with Windows." : "Will no longer start with Windows.", ToolTipIcon.Info);
     }
 
     private void UndoLastSwitch()
@@ -253,11 +287,11 @@ public class TrayContext : ApplicationContext
         if (ok)
         {
             DetectActiveProfile();
-            _notifyIcon.Text = "Monitor Layout Switcher";
+            _notifyIcon.Text = AppInfo.Name;
         }
         else
         {
-            _notifyIcon.ShowBalloonTip(3000, "Monitor Layout Switcher — Failed", msg, ToolTipIcon.Error);
+            _notifyIcon.ShowBalloonTip(3000, AppInfo.Name + " — Failed", msg, ToolTipIcon.Error);
         }
         RefreshMenuAndHotkeys();
     }
@@ -269,13 +303,13 @@ public class TrayContext : ApplicationContext
         if (!ProfileManager.TrySaveProfiles(_profiles, out string saveError))
         {
             _profiles.Remove(created);
-            _notifyIcon.ShowBalloonTip(4000, "Monitor Layout Switcher — Failed", saveError, ToolTipIcon.Error);
+            _notifyIcon.ShowBalloonTip(4000, AppInfo.Name + " — Failed", saveError, ToolTipIcon.Error);
             return;
         }
 
         MarkProfileFileHandled();
         RefreshMenuAndHotkeys();
-        _notifyIcon.ShowBalloonTip(2000, "Monitor Layout Switcher", $"Saved {created.Name}", ToolTipIcon.Info);
+        _notifyIcon.ShowBalloonTip(2000, AppInfo.Name, $"Saved {created.Name}", ToolTipIcon.Info);
     }
 
     /// <summary>Builds the tray entries for the --screenshot-menu diagnostic.</summary>
@@ -300,6 +334,12 @@ public class TrayContext : ApplicationContext
         entries.Add(new TrayPopup.CommandEntry { Text = "Save current arrangement as a layout", Invoke = () => { } });
         entries.Add(new TrayPopup.CommandEntry { Text = "Edit layouts\u2026", Invoke = () => { } });
         entries.Add(new TrayPopup.SeparatorEntry());
+        entries.Add(new TrayPopup.CommandEntry
+        {
+            Text = "Start with Windows",
+            Checked = StartupRegistration.IsEnabled,
+            Invoke = () => { }
+        });
         entries.Add(new TrayPopup.CommandEntry { Text = "Exit", Invoke = () => { } });
         return entries;
     }
@@ -316,12 +356,12 @@ public class TrayContext : ApplicationContext
         if (success)
         {
             _activeProfile = profile;
-            _notifyIcon.Text = $"Monitor Layout: {profile.Name}";
+            _notifyIcon.Text = $"{AppInfo.Name} · {profile.Name}";
             RefreshMenuAndHotkeys();
         }
         else
         {
-            _notifyIcon.ShowBalloonTip(3000, "Monitor Layout Switcher — Failed", error, ToolTipIcon.Error);
+            _notifyIcon.ShowBalloonTip(3000, AppInfo.Name + " — Failed", error, ToolTipIcon.Error);
         }
     }
 

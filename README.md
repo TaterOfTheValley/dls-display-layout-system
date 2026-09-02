@@ -1,6 +1,6 @@
-# Monitor Layout Switcher
+# DLS — Display Layout System
 
-A Windows 11 tray utility for switching between saved monitor layouts with a
+A Windows 11 tray utility for switching between saved display layouts with a
 hotkey. Built for one specific problem: several monitors shared between two
 computers, where turning two of them off on this PC — so the other PC can use
 them — should take one keypress rather than a trip through display settings.
@@ -17,16 +17,50 @@ other two back exactly as they were. That is what this does.
 - Revert automatically if you don't confirm, so a switch can't strand you
   looking at a monitor it just turned off.
 
+## Starting up
+
+DLS adds itself to Windows startup on first launch — a tray utility you have to
+remember to start is one you stop using. It is a ticked item in the tray menu, so
+it is visible and one click to turn off, and it uses the per-user `Run` key, so no
+admin rights and it shows up in Task Manager's Startup tab like anything else.
+
+If you disable it *in Task Manager*, the tray item greys out and says so rather
+than pretending otherwise — Windows records that separately, and only Task Manager
+can undo it.
+
+On first launch DLS also checks its environment and tells you if something is
+wrong: an unsupported Windows build, a display API that does not respond, no
+detectable monitors, or a folder it cannot save layouts into. A healthy machine
+sees nothing at all. Run `--preflight` any time to see the same report.
+
+> The one dependency DLS cannot check for itself is the .NET runtime — if that is
+> missing this app never starts, and Windows shows its own dialog with a download
+> link. That only applies to the `requires-dotnet8` download; the default build
+> bundles its own runtime and cannot hit this.
+
 ## Requirements
 
-Windows 10 1607 or later (Windows 11 recommended) and the
-[.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0).
-The build is framework-dependent, so the runtime must be installed.
+Windows 10 1607 or later. Windows 11 recommended.
 
-## Getting started
+## Install
 
-Run `dist\MonitorLayoutSwitcher.exe`. It lives in the tray; double-click the
-icon to open the layout editor.
+Download from the [latest release](../../releases/latest). Two builds are offered:
+
+| Download | Size | Needs .NET installed |
+|---|---|---|
+| `DLS-<version>-win-x64.exe` | ~68 MB | **No.** The runtime is bundled. Take this one if unsure. |
+| `DLS-<version>-win-x64-requires-dotnet8.exe` | ~330 KB | Yes — the [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0). |
+
+There is no installer. It is a single executable: put it wherever you like and run
+it. Settings live under `%LOCALAPPDATA%`, not next to the exe, so moving it later
+loses nothing.
+
+> **Windows will warn you the first time.** The executable is not code-signed, so
+> SmartScreen shows *"Windows protected your PC"*. Choose **More info → Run anyway**.
+> Every release ships a `SHA256SUMS.txt` if you would rather verify the download
+> first: `Get-FileHash .\DLS-<version>-win-x64.exe`.
+
+It lives in the tray; double-click the icon to open the layout editor.
 
 There are **no profiles to begin with** — the app won't guess at a layout for
 hardware it hasn't been told about. Set your monitors up the way you want them
@@ -100,15 +134,42 @@ percentage and the layout will apply it after switching.
 
 ## Where settings live
 
-`profiles.json`, beside the executable. It is portable: copy the folder and your
-layouts come with it.
+`%LOCALAPPDATA%\DLS\.dls` — scoped to your Windows account, not to a folder. Move
+the executable, re-download it, or run it from anywhere and it finds the same
+layouts.
 
-It is **machine-specific**. Profiles identify monitors by their Windows device
-path, which encodes the physical port a monitor is plugged into — so a profile
-from another PC, or from a different set of ports, won't match anything. Delete
-`profiles.json` to start over.
+Local rather than Roaming is deliberate: a layout identifies monitors by the
+physical port they are plugged into, so roaming it to another machine would sync
+data that cannot match anything there. Delete `.dls` to start over.
 
-Profiles saved before the display engine was rewritten can't identify monitors
+**Portable mode:** put an empty file called `.dls` next to `DLS.exe` and settings
+live there instead, travelling with the folder.
+
+### Versioning
+
+Two versions, both semantic, moving independently:
+
+- **App version** — `0.1.0-alpha`, set by the release tag (`DLS.csproj` holds the
+  local-build default). Shown by `--preflight` and recorded in every settings file.
+- **Settings format** — `MAJOR.MINOR` in the `.dls` file. MAJOR changes when a field
+  changes meaning or disappears; MINOR when fields are only added. There is no PATCH:
+  a file format has no bug-fix axis.
+
+That split is what makes the compatibility rules meaningful rather than
+all-or-nothing:
+
+| File says | What happens |
+|---|---|
+| Same or older | Loaded. Older is migrated forward a step at a time and saved back, so the upgrade happens once. |
+| **Newer MINOR** (e.g. 1.1 vs 1.0) | Loaded normally — additive changes are safe to read. Backed up to `.dls.v1.1.bak` first, because saving would drop the fields this build doesn't know. |
+| **Newer MAJOR** (e.g. 2.0 vs 1.0) | **Refused.** Backed up and the session starts empty. Fields could mean something else entirely, and a layout applied from a misread file drives real hardware. |
+| Unreadable | You start with no layouts and are told why. |
+
+A layout that can't identify its monitors is flagged for re-capture. That's derived
+from the data — a target with no device path — rather than stored as a number, so it
+can't disagree with the layout it describes.
+
+Layouts saved before the display engine was rewritten can't identify monitors
 reliably. Those are flagged as needing re-capture rather than being migrated,
 because the old identity data couldn't tell two same-model monitors apart.
 
@@ -119,6 +180,7 @@ The app is a GUI executable, so it attaches to the calling console. Add
 
 | Command | What it does |
 |---|---|
+| `--preflight` | Runs the first-launch environment checks and prints the report. |
 | `--dump-config` | Prints the live display topology. Non-destructive. **Start here when something misbehaves.** |
 | `--list-profiles` | Lists saved layouts and the monitors in each. |
 | `--capture "<name>"` | Saves the current arrangement under that name. |
@@ -137,17 +199,41 @@ extended.
 ## Building
 
 ```
-build.cmd
+build.cmd                  fast framework-dependent build
+build.cmd selfcontained    what a release actually ships (~68 MB)
 ```
 
-Publishes a single-file build to `dist\`. Or directly:
+Both publish a single file to `dist\`, which is gitignored. Or directly:
 
 ```
-dotnet build src\MonitorLayoutSwitcher.csproj -c Release
+dotnet build src\DLS.csproj -c Release
 ```
 
-`dist\` is checked into the repository on purpose — there is no CI or release
-pipeline, so the committed binary is the distribution.
+## Releasing
+
+There is no release branch. A release is a tag on `master`:
+
+```
+git tag v0.2.0
+git push --tags
+```
+
+`.github/workflows/release.yml` then builds both variants on a Windows runner, derives
+every version number from the tag, writes `SHA256SUMS.txt`, and publishes a GitHub
+release with generated notes. A tag with a pre-release tail — `v0.2.0-alpha` — is
+marked as a pre-release, so it does not become the *Latest* download.
+
+The tag is the only place a release version is set. `DLS.csproj` holds a default for
+local builds and is overridden by the workflow, so there is nothing to bump by hand.
+
+## Bundled components
+
+The self-contained build embeds the .NET 8 runtime. That runtime, the Windows Desktop
+runtime and `System.Text.Json` are MIT licensed, and their notice ships with every
+release. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+No license has been chosen for DLS itself yet, so no rights to use, modify or
+redistribute it are granted at this stage.
 
 ## How it works
 

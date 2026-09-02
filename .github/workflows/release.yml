@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+# gh release create writes to the repo. Nothing else here needs a token.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # The tag is the single source of truth for the version. DLS.csproj carries a
+      # default for local builds; every number below overrides it.
+      #
+      # AssemblyVersion and FileVersion must be strictly numeric — the CLR and the
+      # Win32 version resource both reject a "-alpha" suffix — so they get the tag
+      # with any pre-release tail stripped. Version keeps the full string and
+      # becomes InformationalVersion, which is what AppInfo.Version reads.
+      - name: Derive version from tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          NUMERIC="${VERSION%%-*}"
+          if [[ ! "$NUMERIC" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Tag '$GITHUB_REF_NAME' is not vMAJOR.MINOR.PATCH[-prerelease]" >&2
+            exit 1
+          fi
+          echo "VERSION=$VERSION"          >> "$GITHUB_ENV"
+          echo "NUMERIC=$NUMERIC.0"        >> "$GITHUB_ENV"
+
+      - name: Publish (self-contained)
+        run: >
+          dotnet publish src/DLS.csproj -c Release -r win-x64 --nologo
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:EnableCompressionInSingleFile=true
+          -p:DebugType=none
+          -p:Version=${{ env.VERSION }}
+          -p:AssemblyVersion=${{ env.NUMERIC }}
+          -p:FileVersion=${{ env.NUMERIC }}
+          -o publish/self-contained
+
+      - name: Publish (framework-dependent)
+        run: >
+          dotnet publish src/DLS.csproj -c Release -r win-x64 --nologo
+          --self-contained false
+          -p:PublishSingleFile=true
+          -p:DebugType=none
+          -p:Version=${{ env.VERSION }}
+          -p:AssemblyVersion=${{ env.NUMERIC }}
+          -p:FileVersion=${{ env.NUMERIC }}
+          -o publish/framework-dependent
+
+      # Asset names carry the version so downloads do not collide in a Downloads
+      # folder, and say plainly which one needs a runtime installed.
+      #
+      # THIRD-PARTY-NOTICES.md ships with every release because the self-contained exe
+      # redistributes the MIT-licensed .NET runtime, and MIT requires its notice to
+      # travel with the binary. This is required regardless of how DLS is licensed.
+      - name: Stage assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          cp publish/self-contained/DLS.exe \
+             "assets/DLS-${VERSION}-win-x64.exe"
+          cp publish/framework-dependent/DLS.exe \
+             "assets/DLS-${VERSION}-win-x64-requires-dotnet8.exe"
+          cp THIRD-PARTY-NOTICES.md assets/
+          (cd assets && sha256sum DLS-*.exe THIRD-PARTY-NOTICES.md > SHA256SUMS.txt)
+          ls -la assets
+
+      # A tag with a pre-release tail (v0.2.0-alpha) is published as a pre-release,
+      # so it never becomes the "Latest" download by accident.
+      - name: Create release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PRERELEASE=()
+          if [[ "$VERSION" == *-* ]]; then PRERELEASE=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            "${PRERELEASE[@]}" \
+            assets/*
