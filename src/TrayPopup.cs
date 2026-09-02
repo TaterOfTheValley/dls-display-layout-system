@@ -1,6 +1,6 @@
 using System.Drawing.Drawing2D;
 
-namespace MonitorLayoutSwitcher;
+namespace DLS;
 
 /// <summary>
 /// The tray menu, as a drawn popup rather than a ContextMenuStrip.

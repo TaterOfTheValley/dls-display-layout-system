@@ -1,6 +1,6 @@
 using Microsoft.Win32;
 
-namespace MonitorLayoutSwitcher;
+namespace DLS;
 
 /// <summary>
 /// "Start with Windows", via the per-user Run key.

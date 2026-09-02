@@ -1,6 +1,6 @@
 using System.Reflection;
 
-namespace MonitorLayoutSwitcher;
+namespace DLS;
 
 /// <summary>
 /// The app's identity, in one place. Every user-visible name comes from here so

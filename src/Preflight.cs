@@ -1,7 +1,7 @@
 using System.Text;
 using Microsoft.Win32;
 
-namespace MonitorLayoutSwitcher;
+namespace DLS;
 
 /// <summary>
 /// First-launch environment checks.

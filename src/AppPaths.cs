@@ -1,4 +1,4 @@
-namespace MonitorLayoutSwitcher;
+namespace DLS;
 
 /// <summary>
 /// Where DLS keeps its data.

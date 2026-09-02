@@ -1,4 +1,4 @@
-namespace MonitorLayoutSwitcher;
+namespace DLS;
 
 internal static class UiTheme
 {

@@ -1,6 +1,6 @@
 using System.Drawing.Drawing2D;
 
-namespace MonitorLayoutSwitcher;
+namespace DLS;
 
 public class TrayContext : ApplicationContext
 {

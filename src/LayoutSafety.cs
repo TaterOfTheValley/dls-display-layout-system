@@ -1,4 +1,4 @@
-namespace MonitorLayoutSwitcher;
+namespace DLS;
 
 /// <summary>
 /// Wraps every layout change in a revert-by-default safety net.

@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace MonitorLayoutSwitcher;
+namespace DLS;
 
 internal static class Program
 {
