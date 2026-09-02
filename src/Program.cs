@@ -80,6 +80,24 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        // Every path below reads or writes settings, so resolve their location first.
+        AppPaths.Initialise();
+
+        if (args.Length > 0 && args[0].Equals("--preflight", StringComparison.OrdinalIgnoreCase))
+        {
+            RunDiagnostic(args, () =>
+            {
+                Console.WriteLine($"{AppInfo.Branded} {AppInfo.Version}");
+                Console.WriteLine();
+                var results = Preflight.Run();
+                Console.Write(Preflight.Format(results));
+                Console.WriteLine();
+                Console.WriteLine($"Start with Windows: {StartupRegistration.Current}");
+                Environment.ExitCode = results.Any(c => !c.Passed && c.Fatal) ? 1 : 0;
+            });
+            return;
+        }
+
         if (args.Length > 0 && args[0].Equals("--dump-config", StringComparison.OrdinalIgnoreCase))
         {
             // Non-destructive: prints the live CCD topology, including monitors that
@@ -158,8 +176,7 @@ internal static class Program
             if (saved.Count == 0) Console.WriteLine("No layouts saved yet.");
             foreach (var p in saved)
             {
-                Console.WriteLine($"{p.Name}  (schema v{p.SchemaVersion}" +
-                                  $"{(p.NeedsRecapture ? ", NEEDS RE-CAPTURE" : "")})");
+                Console.WriteLine($"{p.Name}{(p.NeedsRecapture ? "  (NEEDS RE-CAPTURE)" : "")}");
                 foreach (var d in p.Displays)
                 {
                     Console.WriteLine($"    {(d.Enabled ? "ON " : "off")} {d.MonitorId,-24} " +
@@ -283,16 +300,41 @@ internal static class Program
         }
 
         // Check if another instance is running
-        using var mutex = new Mutex(true, "MonitorLayoutSwitcher_SingleInstance_Mutex", out bool isNewInstance);
+        using var mutex = new Mutex(true, AppInfo.SingleInstanceMutex, out bool isNewInstance);
         if (!isNewInstance)
         {
             MessageBox.Show(
-                "Monitor Layout Switcher is already running in your system tray.",
-                "Monitor Layout Switcher",
+                $"{AppInfo.Branded} is already running in your system tray.",
+                AppInfo.Name,
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information
             );
             return;
+        }
+
+        // Settings location and any migration from an older install, before anything
+        // tries to read a layout.
+        AppPaths.Initialise();
+
+        // Environment checks before anything touches the display configuration. A
+        // fatal result stops here rather than failing confusingly later.
+        var checks = Preflight.Run();
+        bool canRun = Preflight.ReportProblems(checks);
+        if (!canRun) return;
+
+        if (Preflight.IsFirstRun)
+        {
+            // Starting with Windows is the default: a tray utility that only works
+            // once you remember to launch it is a utility you stop using. It is a
+            // ticked item in the tray menu, so it is visible and one click to undo.
+            StartupRegistration.Set(true, out _);
+            Preflight.MarkFirstRunComplete();
+        }
+        else
+        {
+            // Re-point a stale entry, or restore one that went missing, without ever
+            // overriding a deliberate "off".
+            StartupRegistration.Reconcile();
         }
 
         Application.Run(new TrayContext());
