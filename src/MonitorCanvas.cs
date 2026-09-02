@@ -44,7 +44,13 @@ internal sealed class MonitorCanvas : Control
     private readonly List<(Point A, Point B)> _guides = new();
     private bool _overShelf;
 
-    private const int ShelfHeightDesign = 108;
+    private const int ShelfWidthDesign = 184;
+    private const int ShelfCollapsedWidthDesign = 56;
+
+    /// <summary>Vertical space reserved at the top of the rail for the "not in this
+    /// layout" caption. Chips used to stack starting right under the top padding,
+    /// which put the first one or two directly on top of the wrapped caption text.</summary>
+    private const int ShelfHeaderDesign = 92;
     private const int SnapThreshold = 72;
 
     public event EventHandler? LayoutChanged;
@@ -78,14 +84,24 @@ internal sealed class MonitorCanvas : Control
     }
 
     /// <summary>
-    /// Zero when every monitor is already in the layout. The shelf only means
-    /// something while there is something on it, and a permanently reserved band was
-    /// taking a fifth of the canvas to say "empty".
+    /// True while the rail has something to show — an unused monitor sitting on it, or
+    /// one mid-drag out of it. This, not drag state in general, is what the rail's
+    /// width should follow: widening for every drag (including one that never touches
+    /// the rail, like repositioning a monitor already on the canvas) is what used to
+    /// shove the whole view sideways under the user's cursor.
     /// </summary>
-    private int ShelfHeight =>
-        _items.Any(i => !i.Config.Enabled) || _dragFromShelf || _drag != null
-            ? Math.Max(S(96), S(ShelfHeightDesign))
-            : 0;
+    private bool ShelfExpanded => _items.Any(i => !i.Config.Enabled) || _dragFromShelf;
+
+    /// <summary>
+    /// A rail down the left edge, present whether or not anything is on it — only its
+    /// width changes, and only between drags, never during one, so a drag never sees
+    /// the canvas geometry shift under it. Collapsed to a labeled strip when nothing is
+    /// unused, so the rail's purpose stays visible without permanently spending a fifth
+    /// of the canvas on "empty".
+    /// </summary>
+    private int ShelfWidth => ShelfExpanded
+        ? Math.Max(S(96), S(ShelfWidthDesign))
+        : Math.Max(S(40), S(ShelfCollapsedWidthDesign));
     private int Pad => Math.Max(S(16), S(18));
 
     public void Bind(DisplayProfile? profile)
@@ -376,11 +392,10 @@ internal sealed class MonitorCanvas : Control
     {
         if (!_viewFrozen) _view = ComputeView();
 
-        int shelf = ShelfHeight;
-        int chipW = Math.Max(S(120), S(135));
+        int chipW = Math.Max(S(96), ShelfWidth - Pad * 2);
         int chipH = Math.Max(S(54), S(62));
         int x = Pad;
-        int y = Height - shelf + S(32);
+        int y = S(ShelfHeaderDesign);
 
         foreach (var item in _items)
         {
@@ -391,7 +406,7 @@ internal sealed class MonitorCanvas : Control
             else if (!ReferenceEquals(item, _drag))
             {
                 item.DrawRect = new Rectangle(x, y, chipW, chipH);
-                x += chipW + Pad / 2;
+                y += chipH + Pad / 2;
             }
         }
     }
@@ -399,17 +414,17 @@ internal sealed class MonitorCanvas : Control
     private ViewTransform ComputeView()
     {
         var enabled = _items.Where(i => i.Config.Enabled).ToList();
-        int shelf = ShelfHeight;
-        int availW = Math.Max(S(40), Width - Pad * 2);
-        int availH = Math.Max(S(40), Height - shelf - Pad * 2);
+        int shelf = ShelfWidth;
+        int availW = Math.Max(S(40), Width - shelf - Pad * 2);
+        int availH = Math.Max(S(40), Height - Pad * 2);
 
         if (enabled.Count == 0)
         {
             return new ViewTransform
             {
                 Scale = Math.Min(availW / 3840f, availH / 2160f) * 0.7f,
-                OffsetX = Width / 2f,
-                OffsetY = (Height - shelf) / 2f
+                OffsetX = shelf + (Width - shelf) / 2f,
+                OffsetY = Height / 2f
             };
         }
 
@@ -426,7 +441,7 @@ internal sealed class MonitorCanvas : Control
         return new ViewTransform
         {
             Scale = scale,
-            OffsetX = Pad + (availW - usedW) / 2f - minX * scale,
+            OffsetX = shelf + Pad + (availW - usedW) / 2f - minX * scale,
             OffsetY = Pad + (availH - usedH) / 2f - minY * scale
         };
     }
@@ -463,22 +478,22 @@ internal sealed class MonitorCanvas : Control
         g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
         g.Clear(UiTheme.Input);
 
-        int shelfTop = Height - ShelfHeight;
-        DrawGrid(g, shelfTop);
+        int shelfLeft = ShelfWidth;
+        DrawGrid(g, shelfLeft);
         DrawEnabled(g);
         DrawGuides(g);
-        DrawShelf(g, shelfTop);
+        DrawShelf(g, shelfLeft);
         DrawUnused(g);
         DrawBorder(g);
     }
 
-    private void DrawGrid(Graphics g, int shelfTop)
+    private void DrawGrid(Graphics g, int shelfLeft)
     {
         int step = Math.Max(S(16), S(22));
         using var brush = new SolidBrush(Color.FromArgb(40, UiTheme.Gold));
-        for (int x = step / 2; x < Width; x += step)
+        for (int x = shelfLeft + step / 2; x < Width; x += step)
         {
-            for (int y = step / 2; y < shelfTop; y += step)
+            for (int y = step / 2; y < Height; y += step)
             {
                 g.FillRectangle(brush, x, y, 1, 1);
             }
@@ -488,9 +503,9 @@ internal sealed class MonitorCanvas : Control
         {
             using var font = new Font("Segoe UI", 10f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel);
             using var muted = new SolidBrush(UiTheme.Muted);
-            var text = "Drag a display up here to include it in this profile";
+            var text = "Drag a display from the rail to include it in this profile";
             var size = g.MeasureString(text, font);
-            g.DrawString(text, font, muted, (Width - size.Width) / 2f, (shelfTop - size.Height) / 2f);
+            g.DrawString(text, font, muted, shelfLeft + (Width - shelfLeft - size.Width) / 2f, (Height - size.Height) / 2f);
         }
     }
 
@@ -684,21 +699,47 @@ internal sealed class MonitorCanvas : Control
         return path;
     }
 
-    private void DrawShelf(Graphics g, int shelfTop)
+    private void DrawShelf(Graphics g, int shelfLeft)
     {
-        if (ShelfHeight <= 0) return;
-
         using var fill = new SolidBrush(_overShelf ? Color.FromArgb(36, 22, 20) : UiTheme.Panel);
-        g.FillRectangle(fill, 0, shelfTop, Width, ShelfHeight);
+        g.FillRectangle(fill, 0, 0, shelfLeft, Height);
         using var pen = new Pen(_overShelf ? UiTheme.Danger : UiTheme.Line);
-        g.DrawLine(pen, 0, shelfTop, Width, shelfTop);
+        g.DrawLine(pen, shelfLeft, 0, shelfLeft, Height);
 
-        using var font = new Font("Segoe UI", 8.5f * DpiScale, FontStyle.Bold, GraphicsUnit.Pixel);
+        if (ShelfExpanded) DrawShelfLabelExpanded(g, shelfLeft);
+        else DrawShelfLabelCollapsed(g, shelfLeft);
+    }
+
+    private void DrawShelfLabelExpanded(Graphics g, int shelfLeft)
+    {
+        using var font = new Font("Segoe UI", 8f * DpiScale, FontStyle.Bold, GraphicsUnit.Pixel);
         using var brush = new SolidBrush(_overShelf ? UiTheme.Danger : UiTheme.Muted);
+        using var fmt = new StringFormat();
         string label = _overShelf
             ? "DROP TO REMOVE FROM THIS PROFILE"
             : "NOT IN THIS LAYOUT  ·  drag onto the canvas to include";
-        g.DrawString(label, font, brush, Pad, shelfTop + S(8));
+        g.DrawString(label, font, brush, new RectangleF(Pad * 0.6f, S(10), shelfLeft - Pad, S(ShelfHeaderDesign) - S(16)), fmt);
+    }
+
+    /// <summary>
+    /// The collapsed rail is too narrow for a horizontal line, so the caption runs
+    /// bottom-to-top instead — the one orientation that fits readable text into a strip
+    /// that width. It says what the rail is for even with nothing on it, so a first-time
+    /// user isn't left wondering what the empty sliver down the left edge does.
+    /// </summary>
+    private void DrawShelfLabelCollapsed(Graphics g, int shelfLeft)
+    {
+        string label = _overShelf ? "DROP TO REMOVE" : "UNUSED DISPLAYS";
+        using var font = new Font("Segoe UI", 8f * DpiScale, FontStyle.Bold, GraphicsUnit.Pixel);
+        using var brush = new SolidBrush(_overShelf ? UiTheme.Danger : UiTheme.Muted);
+        using var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+
+        var size = g.MeasureString(label, font);
+        var state = g.Save();
+        g.TranslateTransform(shelfLeft / 2f, Height / 2f);
+        g.RotateTransform(-90);
+        g.DrawString(label, font, brush, new RectangleF(-size.Width / 2f, -size.Height / 2f, size.Width, size.Height), fmt);
+        g.Restore(state);
     }
 
     private void DrawGuides(Graphics g)
@@ -770,7 +811,7 @@ internal sealed class MonitorCanvas : Control
         base.OnMouseMove(e);
         if (_drag != null)
         {
-            _overShelf = e.Y >= Height - ShelfHeight;
+            _overShelf = e.X < ShelfWidth;
             if (_dragFromShelf)
             {
                 MoveShelfDrag(e.Location);
@@ -810,7 +851,7 @@ internal sealed class MonitorCanvas : Control
 
         var dragged = _drag;
         bool fromShelf = _dragFromShelf;
-        bool overShelf = e.Y >= Height - ShelfHeight;
+        bool overShelf = e.X < ShelfWidth;
         _drag = null;
         _dragFromShelf = false;
         _overShelf = false;
@@ -849,7 +890,7 @@ internal sealed class MonitorCanvas : Control
     protected override void OnMouseWheel(MouseEventArgs e)
     {
         base.OnMouseWheel(e);
-        if (e.Y >= Height - ShelfHeight) return;
+        if (e.X < ShelfWidth) return;
         float old = Math.Max(0.0001f, _view.Scale);
         float factor = e.Delta > 0 ? 1.12f : 1f / 1.12f;
         float next = Math.Clamp(old * factor, 0.02f, 0.45f);
@@ -904,7 +945,7 @@ internal sealed class MonitorCanvas : Control
     private void MoveShelfDrag(Point mouse)
     {
         if (_drag == null) return;
-        if (mouse.Y < Height - ShelfHeight)
+        if (mouse.X >= ShelfWidth)
         {
             EnsureSize(_drag.Config);
             var sized = ScreenToCanvas(new Rectangle(0, 0, _drag.Config.Width, _drag.Config.Height));
@@ -917,7 +958,7 @@ internal sealed class MonitorCanvas : Control
         }
         else
         {
-            int chipW = Math.Max(S(120), S(135));
+            int chipW = Math.Max(S(96), ShelfWidth - Pad * 2);
             int chipH = Math.Max(S(54), S(62));
             _drag.DrawRect = new Rectangle(mouse.X - chipW / 2, mouse.Y - chipH / 2, chipW, chipH);
             _guides.Clear();
@@ -979,12 +1020,12 @@ internal sealed class MonitorCanvas : Control
         if (bestAbsX <= SnapThreshold)
         {
             int cx = (int)Math.Round(x * _view.Scale + _view.OffsetX);
-            _guides.Add((new Point(cx, Pad), new Point(cx, Height - ShelfHeight - Pad)));
+            _guides.Add((new Point(cx, Pad), new Point(cx, Height - Pad)));
         }
         if (bestAbsY <= SnapThreshold)
         {
             int cy = (int)Math.Round(y * _view.Scale + _view.OffsetY);
-            _guides.Add((new Point(Pad, cy), new Point(Width - Pad, cy)));
+            _guides.Add((new Point(ShelfWidth + Pad, cy), new Point(Width - Pad, cy)));
         }
     }
 
@@ -994,7 +1035,7 @@ internal sealed class MonitorCanvas : Control
         var others = _items.Where(i => i.Config.Enabled && !ReferenceEquals(i, item)).ToList();
         item.Config.Enabled = true;
 
-        if (dropCanvas != null && dropCanvas.Value.Y < Height - ShelfHeight)
+        if (dropCanvas != null && dropCanvas.Value.X >= ShelfWidth)
         {
             var sized = ScreenToCanvas(new Rectangle(0, 0, item.Config.Width, item.Config.Height));
             var topLeft = new Point(dropCanvas.Value.X - sized.Width / 2, dropCanvas.Value.Y - sized.Height / 2);

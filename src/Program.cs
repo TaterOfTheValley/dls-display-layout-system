@@ -224,8 +224,14 @@ internal static class Program
             var target = profiles.FirstOrDefault(p => p.Name.Equals(profileName, StringComparison.OrdinalIgnoreCase)) ?? profiles[0];
             Console.WriteLine($"Validating profile: '{target.Name}' with {target.Displays.Count} displays ({target.Displays.Count(d => d.Enabled)} enabled)");
             // Whether the desktop already matches is what the editor's Apply button
-            // gates on, so it belongs in the same report.
-            Console.WriteLine($"Already active (MatchesCurrent): {DisplayEngine.MatchesCurrent(target)}");
+            // gates on, so it belongs in the same report — as does the breakdown
+            // behind it, which is what the editor's footer counts.
+            var pending = DisplayEngine.Compare(target, DisplayEngine.GetCurrentDisplays());
+            Console.WriteLine($"Already active (MatchesCurrent): {pending.Count == 0}");
+            foreach (var difference in pending)
+            {
+                Console.WriteLine($"    pending: {difference}");
+            }
             foreach (var d in target.Displays.Where(d => d.Enabled))
             {
                 Console.WriteLine($"    wants {d.MonitorId}: {d.Width}x{d.Height} @ {d.RefreshRate}Hz" +

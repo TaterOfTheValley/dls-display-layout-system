@@ -274,21 +274,68 @@ public static class DisplayEngine
     /// caller testing several profiles at once — the tray menu does exactly that —
     /// should query once and pass the result in rather than re-querying per profile.
     /// </summary>
-    public static bool MatchesCurrent(DisplayProfile profile, List<DisplayInfo> displays, int slack = 96)
+    public static bool MatchesCurrent(DisplayProfile profile, List<DisplayInfo> displays, int slack = 96) =>
+        Compare(profile, displays, slack).Count == 0;
+
+    /// <summary>
+    /// One way in which a layout disagrees with the desktop as it is right now — i.e.
+    /// one thing applying it would change.
+    /// </summary>
+    public sealed record LayoutDifference(string Monitor, string Change)
     {
-        if (profile.NeedsRecapture) return false;
+        public override string ToString() => $"{Monitor} {Change}";
+    }
+
+    /// <summary>
+    /// Everything applying <paramref name="profile"/> would change, or an empty list
+    /// when the desktop already looks like it.
+    ///
+    /// This is the single definition of "does this layout match?" — <see
+    /// cref="MatchesCurrent"/> is just "nothing differs". Keeping them one function
+    /// matters: the editor's pending-changes indicator and the tray's live checkmark
+    /// have to agree with the Apply button's own "already active" shortcut, and three
+    /// separate comparisons would eventually disagree about a borderline case and
+    /// leave the user reading a stale badge.
+    /// </summary>
+    public static List<LayoutDifference> Compare(DisplayProfile profile, List<DisplayInfo> displays, int slack = 96)
+    {
+        var differences = new List<LayoutDifference>();
+
+        if (profile.NeedsRecapture)
+        {
+            differences.Add(new LayoutDifference(profile.Name, "needs to be re-captured"));
+            return differences;
+        }
 
         var live = displays.Where(d => d.IsAttached).ToList();
         var wanted = profile.Displays.Where(d => d.Enabled).ToList();
-        if (live.Count != wanted.Count) return false;
 
         foreach (var target in wanted)
         {
+            string name = NameOf(target);
             var match = live.FirstOrDefault(d =>
                 SameHardwareIdentity(d.MonitorDevicePath, IdentityOf(target)));
-            if (match == null) return false;
-            if (match.Width != target.Width || match.Height != target.Height) return false;
-            if (Math.Abs(match.X - target.X) > slack || Math.Abs(match.Y - target.Y) > slack) return false;
+
+            if (match == null)
+            {
+                differences.Add(new LayoutDifference(name, "turns on"));
+                continue;
+            }
+
+            if (match.Width != target.Width || match.Height != target.Height)
+            {
+                differences.Add(new LayoutDifference(name,
+                    $"{match.Width}×{match.Height} → {target.Width}×{target.Height}"));
+            }
+
+            if (Math.Abs(match.X - target.X) > slack || Math.Abs(match.Y - target.Y) > slack)
+            {
+                // Promoting a monitor to main is what moves every other monitor's
+                // coordinates, so it reaches here as a position difference. Saying so
+                // is more use than reporting the side effect.
+                differences.Add(new LayoutDifference(name,
+                    target.IsPrimary && !match.IsPrimary ? "becomes the main display" : "moves"));
+            }
 
             // Refresh rate and scaling are part of what a layout specifies, so a
             // difference in either means it is NOT the live layout. Without this,
@@ -298,14 +345,35 @@ public static class DisplayEngine
             // The 1Hz tolerance absorbs rounding: a captured 59.94Hz mode and a
             // requested 60Hz are the same mode.
             if (target.RefreshRate > 0 && match.RefreshRate > 0 &&
-                Math.Abs(match.RefreshRate - target.RefreshRate) > 1) return false;
+                Math.Abs(match.RefreshRate - target.RefreshRate) > 1)
+            {
+                differences.Add(new LayoutDifference(name, $"{match.RefreshRate} → {target.RefreshRate} Hz"));
+            }
 
             if (target.ScalePercent > 0 && match.ScalePercent > 0 &&
-                match.ScalePercent != target.ScalePercent) return false;
+                match.ScalePercent != target.ScalePercent)
+            {
+                differences.Add(new LayoutDifference(name, $"{match.ScalePercent}% → {target.ScalePercent}% scale"));
+            }
         }
 
-        return true;
+        // A monitor that is on now and not in the layout gets switched off by it —
+        // the difference the user most wants warned about, and the reason a plain
+        // count comparison was never enough.
+        foreach (var extra in live.Where(d =>
+                     !wanted.Any(t => SameHardwareIdentity(d.MonitorDevicePath, IdentityOf(t)))))
+        {
+            differences.Add(new LayoutDifference(NameOf(extra), "turns off"));
+        }
+
+        return differences;
     }
+
+    private static string NameOf(DisplayTargetConfig target) =>
+        string.IsNullOrWhiteSpace(target.MonitorId) ? target.DeviceName : target.MonitorId;
+
+    private static string NameOf(DisplayInfo display) =>
+        string.IsNullOrWhiteSpace(display.MonitorId) ? display.DeviceName : display.MonitorId;
 
     private static string IdentityOf(DisplayTargetConfig target) =>
         string.IsNullOrWhiteSpace(target.MonitorDevicePath) ? target.HardwareId : target.MonitorDevicePath;
@@ -330,7 +398,7 @@ public static class DisplayEngine
 
         var missing = wanted
             .Where(t => !live.Any(d => SameHardwareIdentity(d.MonitorDevicePath, IdentityOf(t))))
-            .Select(t => string.IsNullOrWhiteSpace(t.MonitorId) ? t.DeviceName : t.MonitorId)
+            .Select(NameOf)
             .ToList();
 
         if (missing.Count > 0)
@@ -338,7 +406,7 @@ public static class DisplayEngine
 
         var extra = live
             .Where(d => !wanted.Any(t => SameHardwareIdentity(d.MonitorDevicePath, IdentityOf(t))))
-            .Select(d => string.IsNullOrWhiteSpace(d.MonitorId) ? d.DeviceName : d.MonitorId)
+            .Select(NameOf)
             .ToList();
 
         if (extra.Count > 0)
