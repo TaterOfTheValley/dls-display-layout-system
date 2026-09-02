@@ -18,6 +18,11 @@ internal sealed class KeepLayoutDialog : Form
 {
     private static KeepLayoutDialog? _open;
 
+    /// <summary>Whether the overlay is currently up. Lets other surfaces (the editor's
+    /// undo bar) stay quiet while this is the one place already asking the confirm/undo
+    /// question — otherwise both prompt for the same decision at once.</summary>
+    internal static bool IsOpen => _open is { IsDisposed: false };
+
     private readonly System.Windows.Forms.Timer _tick = new();
     private readonly DateTime _expiresUtc;
     private readonly int _totalSeconds;
@@ -98,11 +103,18 @@ internal sealed class KeepLayoutDialog : Form
     private int S(int v) => (int)Math.Round(v * UiScale);
     private float Remaining => Math.Max(0f, (float)(_expiresUtc - DateTime.UtcNow).TotalSeconds);
 
-    private void PlaceOnPrimary()
+    /// <summary>
+    /// Centres the overlay on the primary display — the one this layout just made
+    /// active, and so the one screen guaranteed to be showing something. Internal
+    /// because <see cref="WindowFollow"/> calls it again once the desktop has settled:
+    /// this runs immediately after the switch, when Windows may not have finished
+    /// moving the primary yet.
+    /// </summary>
+    internal void PlaceOnPrimary()
     {
-        // The primary display is the one this layout just made active, so it is the
-        // one screen guaranteed to be showing something.
-        var area = Screen.PrimaryScreen?.Bounds ?? Screen.AllScreens[0].Bounds;
+        var area = WindowFollow.PrimaryBounds();
+        if (area.Width <= 0 || area.Height <= 0) return;
+
         Location = new Point(
             area.X + (area.Width - Width) / 2,
             area.Y + (int)(area.Height * 0.58) - Height / 2);

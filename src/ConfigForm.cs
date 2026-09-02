@@ -43,7 +43,18 @@ public class ConfigForm : Form
     private Panel _undoPanel = null!;
     private Label _undoLabel = null!;
     private Label _feedbackLabel = null!;
+    private Label _statusLabel = null!;
+    private string _statusTip = string.Empty;
     private Label _hotkeyHint = null!;
+
+    /// <summary>
+    /// The live topology, cached. The pending-changes indicator is recomputed on every
+    /// edit — including every mouse-move of a drag — and a CCD enumeration per frame
+    /// is exactly the stutter the rest of this app goes out of its way to avoid. The
+    /// list can only go stale when the displays actually change, and every path that
+    /// can do that already ends in <see cref="RefreshActiveBadges"/>, which re-queries.
+    /// </summary>
+    private List<DisplayInfo> _liveDisplays = new();
     private readonly ToolTip _tips = new();
     private readonly System.Windows.Forms.Timer _undoTimer = new() { Interval = 1000 };
     /// <summary>WinForms leaves Panel and FlowLayoutPanel unbuffered, so every child
@@ -725,6 +736,21 @@ public class ConfigForm : Form
             TextAlign = ContentAlignment.MiddleLeft
         };
 
+        // Reading of the selected layout against the desktop as it is now. With
+        // autosave there is no unsaved state to warn about any more, so the question
+        // that matters before pressing Apply is no longer "have I saved this?" but
+        // "is this layout what my screens are actually doing?" — and nothing on screen
+        // answered it. It sits against the Apply button because that is where the
+        // answer is needed.
+        _statusLabel = new Label
+        {
+            ForeColor = UiTheme.Muted,
+            Font = new Font("Segoe UI", 9.5f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel),
+            AutoSize = false,
+            AutoEllipsis = true,
+            TextAlign = ContentAlignment.MiddleRight
+        };
+
         _cancelBtn = UiTheme.MakeButton("Close", false, DpiScale);
         _cancelBtn.Size = new Size(S(100), S(40));
         _cancelBtn.Click += (_, _) => Close();
@@ -741,10 +767,14 @@ public class ConfigForm : Form
         {
             _applyBtn.Location = new Point(footer.Width - _applyBtn.Width - S(20), (footer.Height - _applyBtn.Height) / 2);
             _cancelBtn.Location = new Point(_applyBtn.Left - S(10) - _cancelBtn.Width, (footer.Height - _cancelBtn.Height) / 2);
-            _feedbackLabel.SetBounds(S(24), 0, Math.Max(S(80), _cancelBtn.Left - S(36)), footer.Height);
+
+            int statusW = Math.Min(S(320), Math.Max(S(120), _cancelBtn.Left - S(200)));
+            _statusLabel.SetBounds(_cancelBtn.Left - S(18) - statusW, 0, statusW, footer.Height);
+            _feedbackLabel.SetBounds(S(24), 0, Math.Max(S(80), _statusLabel.Left - S(36)), footer.Height);
         };
 
         footer.Controls.Add(_feedbackLabel);
+        footer.Controls.Add(_statusLabel);
         footer.Controls.Add(_cancelBtn);
         footer.Controls.Add(_applyBtn);
         return footer;
@@ -1419,6 +1449,11 @@ public class ConfigForm : Form
         if (_loading) return;
         _dirty = true;
         ScheduleAutoSave();
+
+        // The edit is now saved but not applied, which is precisely the state the
+        // footer has to keep visible.
+        UpdateLayoutStatus();
+
         if (_dirtyNotified) return;
         _dirtyNotified = true;
         UpdateWindowTitle();
@@ -1434,14 +1469,26 @@ public class ConfigForm : Form
     private void UpdateWindowTitle()
     {
         string star = "";
-        var live = DisplayEngine.FindMatchingProfile(_profiles);
+        var live = LiveProfile();
         string active = live != null ? $"  —  {live.Name} is active" : "";
         Text = AppInfo.Name + star + active;
     }
 
+    /// <summary>The saved layout the desktop currently matches, from the cached
+    /// topology — see <see cref="_liveDisplays"/>.</summary>
+    private DisplayProfile? LiveProfile() =>
+        _profiles.FirstOrDefault(p => DisplayEngine.MatchesCurrent(p, _liveDisplays));
+
+    /// <summary>
+    /// Re-reads the live topology and updates everything derived from it. This is the
+    /// one place that queries, so every caller that changes the displays — apply,
+    /// undo, rescan, a change made outside this app — ends up here.
+    /// </summary>
     private void RefreshActiveBadges()
     {
-        var live = DisplayEngine.FindMatchingProfile(_profiles);
+        _liveDisplays = DisplayEngine.GetCurrentDisplays();
+
+        var live = LiveProfile();
         foreach (var view in _cardViews)
         {
             bool isLive = live?.Id == view.Profile.Id;
@@ -1453,6 +1500,52 @@ public class ConfigForm : Form
             view.CardPanel.Invalidate();
         }
         UpdateWindowTitle();
+        UpdateLayoutStatus();
+    }
+
+    /// <summary>
+    /// Says whether the selected layout is what the screens are doing, and if not, how
+    /// many things applying it would change. Cheap — it compares against the cached
+    /// topology — so it can run on every edit, which is the point: an edit that
+    /// autosaves itself should visibly become something still waiting to be applied.
+    /// </summary>
+    private void UpdateLayoutStatus()
+    {
+        if (_statusLabel is null) return;
+
+        if (_selectedProfile == null || _profiles.Count == 0)
+        {
+            _statusLabel.Text = string.Empty;
+            _statusTip = string.Empty;
+            _tips.SetToolTip(_statusLabel, string.Empty);
+            return;
+        }
+
+        var differences = DisplayEngine.Compare(_selectedProfile, _liveDisplays);
+        bool pending = differences.Count > 0;
+
+        string text = pending
+            ? $"●  {differences.Count} pending change{(differences.Count == 1 ? "" : "s")} — not applied"
+            : "●  In use — matches your displays";
+        var colour = pending ? UiTheme.Gold : UiTheme.Ok;
+
+        // The count answers "is anything pending?"; the list behind it is there for
+        // when the answer is surprising. Tracked separately from the label text
+        // because dragging one monitor back as another goes astray keeps the count
+        // identical while the reasons change completely.
+        string tip = pending
+            ? "Applying this layout would:\n  " + string.Join("\n  ", differences)
+            : "This layout is what Windows is using right now.";
+
+        // Only touch either when it actually changed: this runs on every mouse-move of
+        // a canvas drag, and reassigning Text repaints the footer.
+        if (_statusLabel.Text != text) _statusLabel.Text = text;
+        if (_statusLabel.ForeColor != colour) _statusLabel.ForeColor = colour;
+        if (_statusTip != tip)
+        {
+            _statusTip = tip;
+            _tips.SetToolTip(_statusLabel, tip);
+        }
     }
 
     // Keeps the canvas honest when the layout changes outside this window — a
@@ -1462,12 +1555,24 @@ public class ConfigForm : Form
         if (IsDisposed || !IsHandleCreated) return;
         DisplayModes.Invalidate();
         CcdEngine.InvalidateCaches();
-        BeginInvoke(() => _canvas.RefreshHardware());
+        BeginInvoke(() =>
+        {
+            _canvas.RefreshHardware();
+
+            // A layout that stopped matching because the displays changed underneath
+            // it — Windows settings, a monitor unplugged, an auto-revert — is pending
+            // just as much as one the user edited.
+            RefreshActiveBadges();
+        });
     }
 
     private void UpdateUndoBar()
     {
-        bool show = LayoutSafety.CanUndo;
+        // The overlay already asks "keep or revert?" for every interactive apply, with
+        // its own countdown — showing this bar at the same time was the same question
+        // twice. It only needs to appear for a non-interactive apply (the CLI, a hotkey
+        // with no message loop), where the overlay never opened in the first place.
+        bool show = LayoutSafety.CanUndo && !KeepLayoutDialog.IsOpen;
         _undoPanel.Visible = show;
         if (show)
         {
