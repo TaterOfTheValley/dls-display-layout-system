@@ -1,4 +1,4 @@
-namespace MonitorLayoutSwitcher;
+namespace DLS;
 
 public class ConfigForm : Form
 {

@@ -1,6 +1,6 @@
 using System.Drawing.Drawing2D;
 
-namespace MonitorLayoutSwitcher;
+namespace DLS;
 
 /// <summary>
 /// The overlay shown immediately after a layout switch.

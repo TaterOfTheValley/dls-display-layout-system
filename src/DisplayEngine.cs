@@ -1,5 +1,5 @@
 
-namespace MonitorLayoutSwitcher;
+namespace DLS;
 
 public class DisplayInfo
 {

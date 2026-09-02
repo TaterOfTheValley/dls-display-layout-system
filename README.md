@@ -263,8 +263,6 @@ and reboots. It is compared whole and never parsed. The older approach — readi
 distinguish two identical monitors, and Windows renumbers those names on every
 switch this app performs.
 
-See `ccd-rewrite-plan.md` for the full design rationale.
-
 ## Known limitations
 
 - **A monitor switched to another computer's input may disappear entirely.**

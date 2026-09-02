@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace MonitorLayoutSwitcher;
+namespace DLS;
 
 /// <summary>
 /// One display path as reported by QueryDisplayConfig, with its monitor identity

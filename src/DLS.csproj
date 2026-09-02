@@ -8,10 +8,16 @@
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <RootNamespace>MonitorLayoutSwitcher</RootNamespace>
+    <RootNamespace>DLS</RootNamespace>
     <AssemblyName>DLS</AssemblyName>
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>false</SelfContained>
+
+    <!-- Shows up in the .exe's Windows Properties dialog — the one place a stranger
+         who only has the download, not the README, sees what DLS stands for. -->
+    <Product>DLS — Display Layout System</Product>
+    <AssemblyTitle>DLS — Display Layout System</AssemblyTitle>
+    <Description>Saved display layouts, one keypress.</Description>
 
     <!-- Semantic versioning. Version carries the pre-release tag and becomes
          InformationalVersion; AssemblyVersion stays numeric because Windows and the

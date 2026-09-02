@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace MonitorLayoutSwitcher;
+namespace DLS;
 
 // Interop for the CCD ("Connecting and Configuring Displays") API —
 // QueryDisplayConfig / SetDisplayConfig. This is the API the Windows Settings

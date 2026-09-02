@@ -1,6 +1,6 @@
 # Third-party notices
 
-DLS bundles third-party components. All of them are MIT licensed, which imposes no
+DLS (Display Layout System) bundles third-party components. All of them are MIT licensed, which imposes no
 condition on how DLS itself is licensed — only that this copyright and permission
 notice travels with the redistributed binary. That obligation is independent of
 DLS's own licensing and applies however DLS is distributed. That is what this file

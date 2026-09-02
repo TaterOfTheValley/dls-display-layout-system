@@ -1,7 +1,7 @@
 using System.Reflection;
 using System.Text.Json;
 
-namespace MonitorLayoutSwitcher;
+namespace DLS;
 
 /// <summary>
 /// The on-disk shape of the settings file.

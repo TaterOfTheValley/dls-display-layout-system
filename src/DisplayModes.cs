@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace MonitorLayoutSwitcher;
+namespace DLS;
 
 /// <summary>
 /// Enumerates the modes a monitor can actually run, for the editor's resolution and

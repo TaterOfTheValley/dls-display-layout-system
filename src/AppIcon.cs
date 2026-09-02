@@ -1,6 +1,6 @@
 using System.Drawing.Drawing2D;
 
-namespace MonitorLayoutSwitcher;
+namespace DLS;
 
 /// <summary>
 /// The application icon, drawn rather than shipped as a resource so it stays a

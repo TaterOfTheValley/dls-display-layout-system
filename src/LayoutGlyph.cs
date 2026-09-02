@@ -1,6 +1,6 @@
 using System.Drawing.Drawing2D;
 
-namespace MonitorLayoutSwitcher;
+namespace DLS;
 
 /// <summary>
 /// Draws a monitor arrangement as a small diagram.

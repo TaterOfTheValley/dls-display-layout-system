@@ -91,7 +91,7 @@ jobs:
           PRERELEASE=()
           if [[ "$VERSION" == *-* ]]; then PRERELEASE=(--prerelease); fi
           gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
+            --title "DLS — Display Layout System $GITHUB_REF_NAME" \
             --generate-notes \
             "${PRERELEASE[@]}" \
             assets/*
