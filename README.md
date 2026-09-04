@@ -226,14 +226,13 @@ marked as a pre-release, so it does not become the *Latest* download.
 The tag is the only place a release version is set. `DLS.csproj` holds a default for
 local builds and is overridden by the workflow, so there is nothing to bump by hand.
 
-## Bundled components
+## License
+
+DLS itself is [MIT licensed](LICENSE).
 
 The self-contained build embeds the .NET 8 runtime. That runtime, the Windows Desktop
 runtime and `System.Text.Json` are MIT licensed, and their notice ships with every
 release. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
-
-No license has been chosen for DLS itself yet, so no rights to use, modify or
-redistribute it are granted at this stage.
 
 ## How it works
 
