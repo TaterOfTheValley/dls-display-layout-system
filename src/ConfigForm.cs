@@ -128,7 +128,10 @@ public class ConfigForm : Form
         Controls.Add(BuildUndoBar());
         Controls.Add(BuildFooter());
 
-        if (_profiles.Count > 0) _selectedProfile = _profiles[0];
+        // Whatever the desktop is actually showing right now should be what's
+        // selected when the window opens, not just the first saved layout.
+        _liveDisplays = DisplayEngine.GetCurrentDisplays();
+        if (_profiles.Count > 0) _selectedProfile = LiveProfile() ?? _profiles[0];
         RebuildProfileCards();
         LoadSelectedProfile();
         UpdateEmptyState();
