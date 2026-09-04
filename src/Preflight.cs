@@ -12,7 +12,7 @@ namespace DLS;
 /// of Windows exposes the display APIs the app is built on, whether any monitor is
 /// visible through them, and whether the app can actually save a layout where it has
 /// been put. That last one is the likeliest real-world failure — drop the exe in
-/// Program Files and profiles.json is unwritable.
+/// Program Files and .dls is unwritable.
 /// </summary>
 internal static class Preflight
 {

@@ -1444,7 +1444,7 @@ public class ConfigForm : Form
     /// survives closing the window.
     ///
     /// Debounced rather than immediate — dragging a monitor raises this on every
-    /// mouse move, and rewriting profiles.json per frame would be pointless churn
+    /// mouse move, and rewriting .dls per frame would be pointless churn
     /// (and would wake the file watcher in TrayContext each time).
     /// </summary>
     private void MarkDirty()
