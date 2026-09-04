@@ -193,7 +193,7 @@ public class TrayContext : ApplicationContext
 
         if (_profiles.Count == 0)
         {
-            entries.Add(new TrayPopup.HeadingEntry { Text = "NO LAYOUTS YET" });
+            entries.Add(new TrayPopup.HeadingEntry { Text = $"{AppInfo.Name} - NO LAYOUTS YET" });
             entries.Add(new TrayPopup.CommandEntry
             {
                 Text = "Save your current arrangement",
@@ -203,7 +203,7 @@ public class TrayContext : ApplicationContext
         }
         else
         {
-            entries.Add(new TrayPopup.HeadingEntry { Text = "LAYOUTS" });
+            entries.Add(new TrayPopup.HeadingEntry { Text = $"{AppInfo.Name} - LAYOUTS" });
         }
 
         foreach (var profile in _profiles)
@@ -315,7 +315,7 @@ public class TrayContext : ApplicationContext
     /// <summary>Builds the tray entries for the --screenshot-menu diagnostic.</summary>
     internal static List<TrayPopup.Entry> BuildPreviewEntries(List<DisplayProfile> profiles)
     {
-        var entries = new List<TrayPopup.Entry> { new TrayPopup.HeadingEntry { Text = "LAYOUTS" } };
+        var entries = new List<TrayPopup.Entry> { new TrayPopup.HeadingEntry { Text = $"{AppInfo.Name} - LAYOUTS" } };
         var live = DisplayEngine.GetCurrentDisplays();
 
         foreach (var p in profiles)
@@ -370,7 +370,7 @@ public class TrayContext : ApplicationContext
         _activeProfile = DisplayEngine.FindMatchingProfile(_profiles) ?? _activeProfile;
         if (_activeProfile != null)
         {
-            _notifyIcon.Text = $"Monitor Layout: {_activeProfile.Name}";
+            _notifyIcon.Text = $"{AppInfo.Name}: {_activeProfile.Name}";
         }
     }
 
