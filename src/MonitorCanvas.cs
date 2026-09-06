@@ -115,7 +115,8 @@ internal sealed class MonitorCanvas : Control
         _hardware = DisplayEngine.GetCurrentDisplays();
         MergeHardware();
         RebuildItems();
-        _selected = _items.FirstOrDefault(i => i.Config.Enabled) ?? _items.FirstOrDefault();
+        _selected = _items.FirstOrDefault(i => i.Config.Enabled && i.Config.IsPrimary)
+            ?? _items.FirstOrDefault(i => i.Config.Enabled) ?? _items.FirstOrDefault();
         _viewFrozen = false;
         RecalcLayout();
 
