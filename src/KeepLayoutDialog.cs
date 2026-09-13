@@ -77,9 +77,7 @@ internal sealed class KeepLayoutDialog : Form
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint |
                  ControlStyles.OptimizedDoubleBuffer, true);
 
-        float scale = DeviceDpi / 96f;
-        Size = new Size((int)(500 * scale), (int)(304 * scale));
-        Region = RoundedRegion(new Rectangle(Point.Empty, Size), (int)(14 * scale));
+        ApplyScale();
 
         _tick.Interval = 100;
         _tick.Tick += (_, _) =>
@@ -99,8 +97,64 @@ internal sealed class KeepLayoutDialog : Form
         PlaceOnPrimary();
     }
 
-    private float UiScale => DeviceDpi / 96f;
+    /// <summary>The overlay's design size at 100% scale.</summary>
+    private const int DesignW = 500, DesignH = 304;
+
+    private float _scale;
+
+    private float UiScale => _scale > 0 ? _scale : DeviceDpi / 96f;
     private int S(int v) => (int)Math.Round(v * UiScale);
+
+    /// <summary>
+    /// Sizes the overlay for the screen it is about to appear on.
+    ///
+    /// Every one of its contents is painted from <see cref="UiScale"/>, so the window
+    /// has to be re-sized whenever that changes or the drawing spills out of it. It
+    /// changes more often than it looks: this overlay is created in the moments right
+    /// after a layout switch, so the monitor it lands on — and that monitor's scale
+    /// factor — is frequently not the one the process started on. Getting this wrong
+    /// is what produced an overlay with its buttons painted off its own edge.
+    ///
+    /// The scale is also capped to what the screen can show. A 500×304 overlay at 225%
+    /// is 1125×684, which does not fit on a display that is still at 1024×768 because
+    /// its driver has not finished installing — and this is the one window that must
+    /// be readable then, because it holds the way back.
+    /// </summary>
+    private void ApplyScale()
+    {
+        float scale = DeviceDpi / 96f;
+
+        var area = WindowFollow.PrimaryBounds();
+        if (area.Width > 0 && area.Height > 0)
+        {
+            float fits = Math.Min(area.Width / (float)DesignW, area.Height / (float)DesignH);
+            scale = Math.Max(Math.Min(scale, fits), Math.Min(0.6f, scale));
+        }
+
+        var size = new Size((int)Math.Round(DesignW * scale), (int)Math.Round(DesignH * scale));
+        if (_scale > 0 && Math.Abs(scale - _scale) < 0.001f && Size == size) return;
+
+        _scale = scale;
+        Size = size;
+        Region = RoundedRegion(new Rectangle(Point.Empty, Size), (int)Math.Round(14 * scale));
+        PlaceOnPrimary();
+        Invalidate();
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+
+        // DeviceDpi only became meaningful just now, when Windows decided which
+        // monitor this window is on.
+        ApplyScale();
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+        ApplyScale();
+    }
     private float Remaining => Math.Max(0f, (float)(_expiresUtc - DateTime.UtcNow).TotalSeconds);
 
     /// <summary>

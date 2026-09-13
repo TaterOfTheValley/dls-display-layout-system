@@ -44,7 +44,9 @@ public static class ProfileManager
     /// Bump MINOR when adding optional fields — older builds keep working. Bump MAJOR
     /// when an existing field changes meaning or goes away, and add a migration step.
     /// </summary>
-    public static readonly Version CurrentFormat = new(1, 0);
+    /// 1.1 adds DisplayTargetConfig.MonitorKey — the EDID identity that lets a layout
+    /// survive a change of graphics card. Additive, so 1.0 files load unchanged.
+    public static readonly Version CurrentFormat = new(1, 1);
 
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
@@ -159,18 +161,26 @@ public static class ProfileManager
     }
 
     /// <summary>
-    /// With CCD identity there is nothing to reconcile: MonitorDevicePath is stable
-    /// across enable/disable, renumbering and reboots, so a saved target already knows
-    /// exactly which physical output it means. All that happens here is (a) tagging
-    /// pre-CCD layouts for re-capture and (b) refreshing the cosmetic \\.\DISPLAYn label.
+    /// Brings saved layouts back into agreement with the hardware as it is now.
+    ///
+    /// MonitorDevicePath is stable across enable/disable, renumbering and reboots, so
+    /// in the ordinary case there is nothing to do here beyond refreshing the cosmetic
+    /// \\.\DISPLAYn label. The exception is a change of graphics card — or the same
+    /// monitors moved to different ports — which renumbers every path on the machine
+    /// at once and leaves every saved layout pointing at ports that no longer exist.
+    /// <see cref="MonitorIdentity.Rebind"/> re-attaches those by EDID, and anything it
+    /// repairs is written straight back, so the repair happens once rather than on
+    /// every launch.
     /// </summary>
     private static void Reconcile(List<DisplayProfile> layouts)
     {
         var currentHardware = DisplayEngine.GetCurrentDisplays();
+        int repaired = 0;
 
         foreach (var p in layouts)
         {
             p.Displays.RemoveAll(d => d.Width <= 0 || d.Height <= 0);
+            repaired += MonitorIdentity.Rebind(p, currentHardware);
 
             foreach (var target in p.Displays)
             {
@@ -180,6 +190,7 @@ public static class ProfileManager
 
                 target.DeviceName = matched.DeviceName;
                 target.HardwareId = matched.MonitorDevicePath;
+                target.MonitorKey = matched.MonitorKey;
                 if (string.IsNullOrWhiteSpace(target.MonitorId)) target.MonitorId = matched.MonitorId;
                 if (string.IsNullOrWhiteSpace(target.RelativePosition)) target.RelativePosition = matched.RelativePosition;
             }
@@ -190,6 +201,18 @@ public static class ProfileManager
                 .GroupBy(d => d.MonitorDevicePath, StringComparer.OrdinalIgnoreCase)
                 .Select(g => g.First())
                 .ToList();
+        }
+
+        // Nothing else reads the repaired layouts back from memory, so persist them
+        // here or the same monitors get re-matched on every single launch.
+        if (repaired > 0)
+        {
+            // Appended rather than assigned: a format migration may already have left
+            // a notice, and this one is the more useful of the two to keep.
+            const string repair = "Your monitors are on different ports than when these layouts were saved — " +
+                                  "a new graphics card does that. They were matched back up by monitor.";
+            LastNotice = string.IsNullOrWhiteSpace(LastNotice) ? repair : $"{LastNotice} {repair}";
+            TrySaveProfiles(layouts, out _);
         }
     }
 

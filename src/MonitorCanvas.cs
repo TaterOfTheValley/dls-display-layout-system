@@ -60,7 +60,21 @@ internal sealed class MonitorCanvas : Control
     public DisplayTargetConfig? SelectedConfig => _selected?.Config;
     public bool SnapEnabled { get; set; } = true;
 
-    private float DpiScale => DeviceDpi / 96f;
+    /// <summary>
+    /// The scale to draw at, set by the owning form so the canvas and the chrome
+    /// around it agree. It is normally the monitor's DPI scale, but the editor drops
+    /// below that on a screen too small for its design size, and a canvas still
+    /// drawing at full scale inside a shrunken window would overflow it.
+    /// </summary>
+    public float UiScale
+    {
+        get => _uiScale > 0 ? _uiScale : DeviceDpi / 96f;
+        set { _uiScale = value; Invalidate(); }
+    }
+
+    private float _uiScale;
+
+    private float DpiScale => UiScale;
     private int S(int val) => (int)Math.Round(val * DpiScale);
 
     public MonitorCanvas()
@@ -103,6 +117,30 @@ internal sealed class MonitorCanvas : Control
         ? Math.Max(S(96), S(ShelfWidthDesign))
         : Math.Max(S(40), S(ShelfCollapsedWidthDesign));
     private int Pad => Math.Max(S(16), S(18));
+
+    /// <summary>
+    /// Space at the top of the canvas the fitted view must keep clear, for the view
+    /// controls that float over it. Set by the owner, because the owner is what puts
+    /// them there.
+    ///
+    /// Without it the fit uses the full height and centres in it, which is fine on a
+    /// tall canvas and wrong on a short one: the monitors end up drawn underneath the
+    /// Snap/Fit/Identify strip, where the top of the selected tile — its MAIN badge —
+    /// cannot be seen.
+    /// </summary>
+    public int TopReserve
+    {
+        get => _topReserve;
+        set
+        {
+            if (_topReserve == value) return;
+            _topReserve = value;
+            RecalcLayout();
+            Invalidate();
+        }
+    }
+
+    private int _topReserve;
 
     public void Bind(DisplayProfile? profile)
     {
@@ -229,6 +267,13 @@ internal sealed class MonitorCanvas : Control
         // Clean out dead / 0x0 entries
         _profile.Displays.RemoveAll(d => d.Width <= 0 || d.Height <= 0);
 
+        // Re-attach anything whose port has moved before deciding what is missing.
+        // Without this, a monitor that came back on a different path is not
+        // recognised as one this layout already knows, and the code below dutifully
+        // adds it a second time — which is how a layout ends up listing the same
+        // physical monitor twice, once unusable.
+        MonitorIdentity.Rebind(_profile, _hardware);
+
         // Full CCD capture of every connected monitor, fetched once. A monitor the
         // profile has never seen has to be added with its complete mode detail, not
         // just its geometry — a target without MonitorDevicePath makes the whole
@@ -274,6 +319,23 @@ internal sealed class MonitorCanvas : Control
     // ---------------------------------------------------------------- transitions
 
     private readonly System.Windows.Forms.Timer _anim = new() { Interval = 15 };
+
+    /// <summary>
+    /// The transition timer outlives the control unless it is stopped here, and it
+    /// calls Invalidate on every tick. That was harmless while the canvas lived as long
+    /// as the window did; it stopped being harmless once a scale change started
+    /// rebuilding the canvas, which would otherwise leave a timer per rebuild ticking
+    /// at a disposed control.
+    /// </summary>
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _anim.Stop();
+            _anim.Dispose();
+        }
+        base.Dispose(disposing);
+    }
     private DateTime _animStart;
     private bool _animating;
     private const int AnimMs = 220;
@@ -416,8 +478,9 @@ internal sealed class MonitorCanvas : Control
     {
         var enabled = _items.Where(i => i.Config.Enabled).ToList();
         int shelf = ShelfWidth;
+        int top = Pad + TopReserve;
         int availW = Math.Max(S(40), Width - shelf - Pad * 2);
-        int availH = Math.Max(S(40), Height - Pad * 2);
+        int availH = Math.Max(S(40), Height - top - Pad);
 
         if (enabled.Count == 0)
         {
@@ -425,7 +488,7 @@ internal sealed class MonitorCanvas : Control
             {
                 Scale = Math.Min(availW / 3840f, availH / 2160f) * 0.7f,
                 OffsetX = shelf + (Width - shelf) / 2f,
-                OffsetY = Height / 2f
+                OffsetY = top + availH / 2f
             };
         }
 
@@ -443,7 +506,7 @@ internal sealed class MonitorCanvas : Control
         {
             Scale = scale,
             OffsetX = shelf + Pad + (availW - usedW) / 2f - minX * scale,
-            OffsetY = Pad + (availH - usedH) / 2f - minY * scale
+            OffsetY = top + (availH - usedH) / 2f - minY * scale
         };
     }
 
