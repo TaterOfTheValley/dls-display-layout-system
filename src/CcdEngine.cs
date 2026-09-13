@@ -12,6 +12,7 @@ internal sealed class CcdPath
 {
     public int Index;
     public string MonitorDevicePath = string.Empty;  // the stable identity — compare whole, never parse
+    public string MonitorKey = string.Empty;         // EDID identity — the fallback when a path stops resolving
     public string FriendlyName = string.Empty;
     public string GdiDeviceName = string.Empty;      // \\.\DISPLAY1 — only meaningful while active
     public bool IsActive;
@@ -119,6 +120,7 @@ internal static class CcdEngine
         {
             Index = index,
             MonitorDevicePath = devicePath,
+            MonitorKey = MonitorIdentity.KeyFor(devicePath),
             FriendlyName = string.IsNullOrWhiteSpace(friendly) ? DescribeFromPath(devicePath) : friendly,
             IsActive = path.IsActive,
             TargetAvailable = path.targetInfo.targetAvailable != 0,
@@ -215,6 +217,7 @@ internal static class CcdEngine
     public static void InvalidateCaches()
     {
         lock (PreferredModeCache) PreferredModeCache.Clear();
+        MonitorIdentity.InvalidateCaches();
     }
 
     private static bool TryGetPreferredMode(LUID adapterId, uint targetId,
@@ -420,6 +423,7 @@ internal static class CcdEngine
         return new DisplayTargetConfig
         {
             MonitorDevicePath = entry.MonitorDevicePath,
+            MonitorKey = entry.MonitorKey,
             MonitorId = entry.FriendlyName,
             DeviceName = entry.GdiDeviceName,
             HardwareId = entry.MonitorDevicePath,   // legacy field, kept in sync for old UI bindings

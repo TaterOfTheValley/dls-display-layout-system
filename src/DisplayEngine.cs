@@ -7,6 +7,7 @@ public class DisplayInfo
     public string MonitorId { get; set; } = string.Empty; // EDID / Friendly name
     public string HardwareId { get; set; } = string.Empty; // Stable monitor PnP / EDID identity
     public string MonitorDevicePath { get; set; } = string.Empty; // CCD identity — the authoritative one
+    public string MonitorKey { get; set; } = string.Empty; // EDID identity — survives a GPU swap
     public int X { get; set; }
     public int Y { get; set; }
     public int Width { get; set; }
@@ -73,6 +74,15 @@ public class DisplayTargetConfig
     public string DeviceName { get; set; } = string.Empty;   // \\.\DISPLAYn — display only, never matched on
     public string MonitorId { get; set; } = string.Empty;    // friendly name, e.g. "DELL U2723QE"
     public string HardwareId { get; set; } = string.Empty;   // legacy identity field
+
+    /// <summary>
+    /// The panel's own EDID identity — model, plus its serial when it reports one.
+    /// Not used for matching while the device path still resolves; it exists so that
+    /// when the path stops resolving (a new graphics card renumbers every port on the
+    /// machine at once) a saved layout can still tell which physical monitor it meant.
+    /// See <see cref="MonitorIdentity"/>.
+    /// </summary>
+    public string MonitorKey { get; set; } = string.Empty;
     public string RelativePosition { get; set; } = string.Empty; // Left, Center, Right
     public bool Enabled { get; set; } = true;
     public int X { get; set; }
@@ -166,6 +176,7 @@ public static class DisplayEngine
                     : entry.GdiDeviceName,
                 MonitorId = entry.FriendlyName,
                 MonitorDevicePath = entry.MonitorDevicePath,
+                MonitorKey = entry.MonitorKey,
                 HardwareId = entry.MonitorDevicePath,
                 X = entry.X,
                 Y = entry.Y,
