@@ -198,6 +198,15 @@ Layouts saved before the display engine was rewritten can't identify monitors
 reliably. Those are flagged as needing re-capture rather than being migrated,
 because the old identity data couldn't tell two same-model monitors apart.
 
+## Text size
+
+DLS follows Windows' own text sizes: its body text is the same size as the text in
+File Explorer and in Windows' dialogs. It also follows **Settings > Accessibility >
+Text size**, which Windows applies separately from display scaling. Rows and buttons
+grow to fit the larger text, and the editor switches to its compact layout sooner so
+the monitor canvas keeps its space. If you change the setting while DLS is running,
+an open editor rebuilds at the new size.
+
 ## Command line
 
 The app is a GUI executable, so it attaches to the calling console. Add
@@ -215,6 +224,9 @@ The app is a GUI executable, so it attaches to the calling console. Add
 | `--set-scale <percent>` | Sets the primary display's scaling and reports what actually changed. |
 | `--screenshot-menu <file>` | Renders the tray menu to a PNG. Useful for checking it at your display scaling. |
 | `--screenshot-hud <file>` | Renders the post-switch confirmation overlay to a PNG. |
+| `--screenshot-update <file>` | Renders the update dialog, for a made-up release, to a PNG. Downloads nothing. |
+| `--screenshot <file>` | Opens the layout editor and saves a picture of it to a PNG. |
+| `--text-scale <percent>` | Combine with any `--screenshot` command to render at that text size (100 to 225) instead of the Windows setting. |
 
 `--dump-config` is the one worth knowing. It shows every connected monitor —
 including ones that are currently disabled — with its identity, mode, and
