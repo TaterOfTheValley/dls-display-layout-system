@@ -106,15 +106,12 @@ internal static class UiScaling
 
     /// <summary>
     /// Re-reads the setting. Windows broadcasts a settings change when it moves but
-    /// says nothing about what moved, so callers re-read on any change and act only if
-    /// this reports that the value is actually different.
+    /// says nothing about what moved, so this runs on any change; each window then
+    /// compares <see cref="TextScale"/> with the value it was last laid out at, rather
+    /// than trusting a changed/unchanged answer that whichever listener ran first
+    /// would already have used up.
     /// </summary>
-    public static bool RefreshTextScale()
-    {
-        float previous = TextScale;
-        _textScale = ReadTextScale();
-        return Math.Abs(previous - _textScale) > 0.001f;
-    }
+    public static void RefreshTextScale() => _textScale = ReadTextScale();
 
     private static float ReadTextScale()
     {

@@ -127,6 +127,10 @@ public class ConfigForm : Form
     /// itself triggers.</summary>
     private bool _rescaling;
 
+    /// <summary>The Text size setting the window was last built at, so a settings
+    /// change can tell whether it is the one that matters here.</summary>
+    private float _builtTextScale;
+
     private float DpiScale => _uiScale;
 
     /// <summary>
@@ -244,6 +248,7 @@ public class ConfigForm : Form
         _undoTimer.Start();
         LayoutSafety.UndoStateChanged += OnUndoStateChanged;
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+        Microsoft.Win32.SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
         UpdateUndoBar();
     }
 
@@ -255,6 +260,7 @@ public class ConfigForm : Form
             _undoTimer.Dispose();
             LayoutSafety.UndoStateChanged -= OnUndoStateChanged;
             Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+            Microsoft.Win32.SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
             _tips.Dispose();
         }
         base.Dispose(disposing);
@@ -354,6 +360,7 @@ public class ConfigForm : Form
         _cardViews.Clear();
         _addTile = null;            // ApplyDensity runs before the rail is rebuilt
         foreach (var control in stale) control.Dispose();
+        _builtTextScale = UiScaling.TextScale;
 
         Font = UiType.Create(F(UiType.Body));
 
@@ -557,7 +564,8 @@ public class ConfigForm : Form
     {
         if (_rescaling) return;
 
-        if (Math.Abs(ComputeUiScale(AvailableWorkArea()) - _uiScale) < 0.001f)
+        if (Math.Abs(ComputeUiScale(AvailableWorkArea()) - _uiScale) < 0.001f &&
+            Math.Abs(UiScaling.TextScale - _builtTextScale) < 0.001f)
         {
             ApplySizeConstraints(resize: false);
             return;
@@ -2045,6 +2053,23 @@ public class ConfigForm : Form
             // it — Windows settings, a monitor unplugged, an auto-revert — is pending
             // just as much as one the user edited.
             RefreshActiveBadges();
+        });
+    }
+
+    /// <summary>
+    /// Picks up a change to Windows' Text size setting while the window is open. Every
+    /// size in this form comes from it, so this is the same full rebuild a move to a
+    /// differently scaled monitor gets — and the window resizes, since larger text
+    /// asks for a larger window.
+    /// </summary>
+    private void OnUserPreferenceChanged(object? sender, Microsoft.Win32.UserPreferenceChangedEventArgs e)
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        BeginInvoke(() =>
+        {
+            UiScaling.RefreshTextScale();
+            if (Math.Abs(UiScaling.TextScale - _builtTextScale) < 0.001f) return;
+            ForceRescaleUi(resize: true);
         });
     }
 
