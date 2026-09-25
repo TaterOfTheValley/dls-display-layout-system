@@ -56,6 +56,10 @@ internal sealed class TrayPopup : Form
 
     private readonly List<Entry> _entries;
     private readonly float _scale;
+
+    /// <summary>The scale text is drawn at: the monitor's scale times Windows' Text
+    /// size setting.</summary>
+    private readonly float _textScale;
     private readonly List<Rectangle> _rows = new();
     private int _hot = -1;
 
@@ -96,6 +100,7 @@ internal sealed class TrayPopup : Form
     {
         _entries = entries;
         _scale = scale <= 0 ? 1f : scale;
+        _textScale = _scale * UiScaling.TextScale;
 
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual;
@@ -111,13 +116,47 @@ internal sealed class TrayPopup : Form
         Region = new Region(RoundedPath(new Rectangle(Point.Empty, Size), S(10)));
     }
 
+    /// <summary>Scales a design length. For geometry that holds no text.</summary>
     private int S(int v) => (int)Math.Round(v * _scale);
 
-    private Font NameFont() => new("Segoe UI", 15f * _scale, FontStyle.Regular, GraphicsUnit.Pixel);
-    private Font SubFont() => new("Segoe UI", 11.5f * _scale, FontStyle.Regular, GraphicsUnit.Pixel);
-    private Font HotkeyFont() => new("Consolas", 12f * _scale, FontStyle.Regular, GraphicsUnit.Pixel);
-    private Font CommandFont() => new("Segoe UI", 13.5f * _scale, FontStyle.Regular, GraphicsUnit.Pixel);
-    private Font HeadingFont() => new("Segoe UI", 11f * _scale, FontStyle.Bold, GraphicsUnit.Pixel);
+    /// <summary>Scales a design length that exists to hold text, such as the menu's width.</summary>
+    private int T(int v) => (int)Math.Round(v * _textScale);
+
+    /// <summary>
+    /// A row designed at <paramref name="box"/> pixels for one line at each of
+    /// <paramref name="lines"/>: its display-scaled height plus the extra those lines
+    /// need at the Text size setting, so rows grow by their text and not their padding.
+    /// </summary>
+    private int Hold(int box, params float[] lines)
+    {
+        int height = S(box);
+        foreach (float px in lines)
+        {
+            height += UiType.LineHeight(px * _textScale) - UiType.LineHeight(px * _scale);
+        }
+        return height;
+    }
+
+    // The menu sits beside Windows' own context menus, which set their items at 14px,
+    // so its commands do too; layout names are the one thing a step above.
+    private const float NamePx = UiType.Subtitle;
+    private const float SubPx = UiType.Body;
+    private const float HotkeyPx = UiType.Body;
+    private const float CommandPx = UiType.BodyLarge;
+    private const float HeadingPx = UiType.Caption;
+
+    private Font NameFont() => UiType.Create(NamePx * _textScale);
+    private Font SubFont() => UiType.Create(SubPx * _textScale);
+    private Font HotkeyFont() => UiType.CreateMono(HotkeyPx * _textScale);
+    private Font CommandFont() => UiType.Create(CommandPx * _textScale);
+    private Font HeadingFont() => UiType.Create(HeadingPx * _textScale, FontStyle.Bold);
+
+    /// <summary>A check box two-thirds the height of the line beside it, as Windows draws them.</summary>
+    private int CheckBoxSize => Math.Max(S(13), UiType.LineHeight(CommandPx * _textScale) * 2 / 3);
+
+    private int LayoutRowHeight => Hold(LayoutRowH, NamePx, SubPx);
+    private int CommandRowHeight => Hold(CommandRowH, CommandPx);
+    private int HeadingHeight => Hold(HeadingH, HeadingPx);
 
     /// <summary>
     /// Measures every row and sizes the window to the widest, so nothing can be
@@ -132,7 +171,7 @@ internal sealed class TrayPopup : Form
         using var commandFont = CommandFont();
 
         int glyphBlock = S(46) + S(14);   // diagram plus its gutter
-        int widest = S(MinWidth);
+        int widest = T(MinWidth);
         int height = S(PadY) * 2;
 
         foreach (var entry in _entries)
@@ -141,7 +180,7 @@ internal sealed class TrayPopup : Form
             {
                 case LayoutEntry layout:
                 {
-                    height += S(LayoutRowH);
+                    height += LayoutRowHeight;
                     int name = (int)Math.Ceiling(g.MeasureString(layout.Profile.Name, nameFont).Width);
                     int sub = (int)Math.Ceiling(g.MeasureString(SubtitleFor(layout.Profile), subFont).Width);
                     int hotkey = string.IsNullOrWhiteSpace(layout.Profile.Hotkey)
@@ -152,18 +191,18 @@ internal sealed class TrayPopup : Form
                 }
                 case CommandEntry command:
                 {
-                    height += S(CommandRowH);
+                    height += CommandRowHeight;
                     int text = (int)Math.Ceiling(g.MeasureString(command.Text, commandFont).Width);
                     int detail = string.IsNullOrWhiteSpace(command.Detail)
                         ? 0
                         : (int)Math.Ceiling(g.MeasureString(command.Detail, subFont).Width) + S(18);
-                    int checkbox = command.Checked.HasValue ? S(27) : 0;
+                    int checkbox = command.Checked.HasValue ? S(4) + CheckBoxSize + S(10) : 0;
                     widest = Math.Max(widest, S(PadX) + S(6) + checkbox + text + detail + S(PadX));
                     break;
                 }
                 case HeadingEntry heading:
                 {
-                    height += S(HeadingH);
+                    height += HeadingHeight;
                     using var headingFont = HeadingFont();
                     widest = Math.Max(widest,
                         S(PadX) + S(6) + (int)Math.Ceiling(g.MeasureString(heading.Text, headingFont).Width) + S(PadX));
@@ -175,7 +214,7 @@ internal sealed class TrayPopup : Form
             }
         }
 
-        return new Size(Math.Min(widest, S(MaxWidth)), height);
+        return new Size(Math.Min(widest, T(MaxWidth)), height);
     }
 
     private void PlaceNear(Point anchor)
@@ -211,9 +250,9 @@ internal sealed class TrayPopup : Form
             var entry = _entries[i];
             int h = entry switch
             {
-                LayoutEntry => S(LayoutRowH),
-                CommandEntry => S(CommandRowH),
-                HeadingEntry => S(HeadingH),
+                LayoutEntry => LayoutRowHeight,
+                CommandEntry => CommandRowHeight,
+                HeadingEntry => HeadingHeight,
                 _ => S(SeparatorH)
             };
 
@@ -246,7 +285,7 @@ internal sealed class TrayPopup : Form
 
         bool on = entry.Enabled;
         LayoutGlyph.Draw(g,
-            new RectangleF(S(PadX), row.Y + S(12), S(46), S(28)),
+            new RectangleF(S(PadX), row.Y + (row.Height - S(28)) / 2f, S(46), S(28)),
             entry.Profile.Displays,
             onColor: Color.FromArgb(on ? 170 : 70, UiTheme.Text),
             offColor: Color.FromArgb(90, UiTheme.Line),
@@ -267,19 +306,23 @@ internal sealed class TrayPopup : Form
 
         int textWidth = Math.Max(S(40), Width - textLeft - hotkeyWidth - S(PadX));
 
-        using (var nameFont = NameFont())
+        // The two lines are stacked by their own heights and centred as a pair, so
+        // larger text grows the pair rather than overlapping it.
+        using var nameFont = NameFont();
+        using var subFont = SubFont();
+        float y = row.Y + (row.Height - nameFont.Height - subFont.Height) / 2f;
+
         using (var ink = new SolidBrush(on ? UiTheme.Text : UiTheme.Muted))
         {
             g.DrawString(entry.Profile.Name, nameFont, ink,
-                new RectangleF(textLeft, row.Y + S(8), textWidth, S(20)), trim);
+                new RectangleF(textLeft, y, textWidth, nameFont.Height), trim);
         }
 
         bool broken = entry.Profile.NeedsRecapture;
-        using (var subFont = SubFont())
         using (var subInk = new SolidBrush(broken ? UiTheme.Danger : UiTheme.Muted))
         {
             g.DrawString(SubtitleFor(entry.Profile), subFont, subInk,
-                new RectangleF(textLeft, row.Y + S(28), textWidth, S(18)), trim);
+                new RectangleF(textLeft, y + nameFont.Height, textWidth, subFont.Height), trim);
         }
 
         if (hotkeyWidth > 0)
@@ -304,7 +347,7 @@ internal sealed class TrayPopup : Form
 
         if (entry.Checked is { } isChecked)
         {
-            int box = S(13);
+            int box = CheckBoxSize;
             var b = new Rectangle(S(PadX) + S(4), row.Y + (row.Height - box) / 2, box, box);
 
             using (var pen = new Pen(isChecked ? UiTheme.Gold : UiTheme.Line))
