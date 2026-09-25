@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Velopack;
 
 namespace DLS;
 
@@ -80,6 +81,14 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        // The installer invokes this executable for fast install/update hooks. Handle
+        // them before normal startup, which touches settings and display devices.
+        VelopackApp.Build()
+            // A downloaded package waits for the user's explicit Install choice.
+            .SetAutoApplyOnStartup(false)
+            .OnBeforeUninstallFastCallback(_ => StartupRegistration.RemoveForUninstall())
+            .Run();
+
         // Every path below reads or writes settings, so resolve their location first.
         AppPaths.Initialise();
 

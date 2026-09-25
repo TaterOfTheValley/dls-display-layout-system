@@ -4,9 +4,14 @@ on:
   push:
     tags: ['v*']
 
-# gh release create writes to the repo. Nothing else here needs a token.
+# The archive release uses GITHUB_TOKEN. Publishing update packages to the
+# companion public repository requires DLS_RELEASES_TOKEN.
 permissions:
   contents: write
+
+env:
+  UPDATE_REPOSITORY: TaterOfTheValley/dls-display-layout-system-releases
+  UPDATE_REPOSITORY_URL: https://github.com/TaterOfTheValley/dls-display-layout-system-releases
 
 jobs:
   release:
@@ -80,6 +85,48 @@ jobs:
           (cd assets && sha256sum DLS-*.exe THIRD-PARTY-NOTICES.md > SHA256SUMS.txt)
           ls -la assets
 
+      # Installed copies update from the public binary-only repository. The source
+      # repository's GITHUB_TOKEN cannot write to another repository, so this step
+      # uses a fine-grained token scoped to that repository only.
+      - name: Pack installable update
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp THIRD-PARTY-NOTICES.md publish/self-contained/
+          dotnet tool install --tool-path publish/tools vpk --version 1.2.0
+          publish/tools/vpk.exe pack \
+            --packId DLS-DisplayLayoutSystem \
+            --packTitle "DLS - Display Layout System" \
+            --packVersion "$VERSION" \
+            --packDir publish/self-contained \
+            --mainExe DLS.exe \
+            --runtime win-x64 \
+            --noPortable true \
+            --releaseNotes RELEASE_NOTES.md \
+            --outputDir publish/velopack
+
+      - name: Publish installable update
+        shell: bash
+        env:
+          VPK_TOKEN: ${{ secrets.DLS_RELEASES_TOKEN }}
+          GH_TOKEN: ${{ secrets.DLS_RELEASES_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$VPK_TOKEN" ]]; then
+            echo "::error::Set DLS_RELEASES_TOKEN with Contents: read/write access to $UPDATE_REPOSITORY" >&2
+            exit 1
+          fi
+          PRERELEASE=()
+          if [[ "$VERSION" == *-* ]]; then PRERELEASE=(--pre); fi
+          publish/tools/vpk.exe upload github \
+            --repoUrl "$UPDATE_REPOSITORY_URL" \
+            --outputDir publish/velopack \
+            --tag "$GITHUB_REF_NAME" \
+            --releaseName "DLS - Display Layout System $GITHUB_REF_NAME" \
+            --publish --merge "${PRERELEASE[@]}"
+          gh release upload "$GITHUB_REF_NAME" assets/* \
+            --repo "$UPDATE_REPOSITORY" --clobber
+
       # A tag with a pre-release tail (v0.2.0-alpha) is published as a pre-release,
       # so it never becomes the "Latest" download by accident.
       - name: Create release
@@ -90,8 +137,12 @@ jobs:
           set -euo pipefail
           PRERELEASE=()
           if [[ "$VERSION" == *-* ]]; then PRERELEASE=(--prerelease); fi
-          gh release create "$GITHUB_REF_NAME" \
-            --title "DLS — Display Layout System $GITHUB_REF_NAME" \
-            --generate-notes \
-            "${PRERELEASE[@]}" \
-            assets/*
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" assets/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "DLS — Display Layout System $GITHUB_REF_NAME" \
+              --generate-notes \
+              "${PRERELEASE[@]}" \
+              assets/*
+          fi

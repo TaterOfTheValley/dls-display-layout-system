@@ -44,21 +44,46 @@ Windows 10 1607 or later. Windows 11 recommended.
 
 ## Install
 
-Download from the [latest release](../../releases/latest). Two builds are offered:
+Download from the [DLS binary releases](https://github.com/TaterOfTheValley/dls-display-layout-system-releases/releases).
+The source repository stays private; this public repository contains install and
+update packages only. During the alpha period, use the releases list because
+GitHub's **Latest** link excludes prereleases.
 
-| Download | Size | Needs .NET installed |
-|---|---|---|
-| `DLS-<version>-win-x64.exe` | ~68 MB | **No.** The runtime is bundled. Take this one if unsure. |
-| `DLS-<version>-win-x64-requires-dotnet8.exe` | ~330 KB | Yes — the [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0). |
+| Download | Use |
+|---|---|
+| `DLS-DisplayLayoutSystem-win-Setup.exe` | **Recommended.** Installs DLS once, adds shortcuts, and enables in-app updates. The .NET runtime is bundled. |
+| `DLS-<version>-win-x64.exe` | Standalone EXE. Run it from a folder you choose; updates are manual. The .NET runtime is bundled. |
+| `DLS-<version>-win-x64-requires-dotnet8.exe` | Small standalone EXE. Requires the [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0). Updates are manual. |
 
-There is no installer. It is a single executable: put it wherever you like and run
-it. Settings live under `%LOCALAPPDATA%`, not next to the exe, so moving it later
-loses nothing.
+If you already run an older standalone DLS, **Exit** it from the tray before running
+`DLS-DisplayLayoutSystem-win-Setup.exe` for the first time. Remove your old EXE or shortcut after the
+installed copy opens. Both copies use the same layouts, so no export is needed.
+The installer is per-user and needs no administrator rights. It installs under
+`%LOCALAPPDATA%\DLS-DisplayLayoutSystem`; layouts remain under `%LOCALAPPDATA%\DLS`.
+
+For manual standalone updates, put the EXE in a permanent folder as `DLS.exe`.
+On each update, exit DLS, replace that file with the newly downloaded version
+(renamed to `DLS.exe`), then launch it. The first launch after moving a copy repairs
+the **Start with Windows** path if that setting is enabled.
+
+### Updates
+
+Installed copies check for updates quietly after startup and every 12 hours while
+running. When one is available, DLS shows a tray notification. Choose **Check for
+updates** or **Update to DLS ...** from the tray menu, review the release notes, then
+select **Install and restart**. DLS downloads and verifies the package, saves pending
+layout edits, exits, applies the update, and relaunches. You can choose **Later** and
+keep working. A standalone EXE directs you to the installer when you choose **Check
+for updates**.
+
+Layouts and hotkeys live outside the installed application, so updates preserve them.
+If a display change is waiting for confirmation, finish that choice before installing
+an update.
 
 > **Windows will warn you the first time.** The executable is not code-signed, so
 > SmartScreen shows *"Windows protected your PC"*. Choose **More info → Run anyway**.
-> Every release ships a `SHA256SUMS.txt` if you would rather verify the download
-> first: `Get-FileHash .\DLS-<version>-win-x64.exe`.
+> Every release ships a `SHA256SUMS.txt` for the standalone downloads if you would
+> rather verify one first: `Get-FileHash .\DLS-<version>-win-x64.exe`.
 
 It lives in the tray; double-click the icon to open the layout editor.
 
@@ -134,16 +159,17 @@ percentage and the layout will apply it after switching.
 
 ## Where settings live
 
-`%LOCALAPPDATA%\DLS\.dls` — scoped to your Windows account, not to a folder. Move
-the executable, re-download it, or run it from anywhere and it finds the same
-layouts.
+`%LOCALAPPDATA%\DLS\.dls` — scoped to your Windows account, not to an app
+version. Install an update, move a standalone executable, or re-download it and
+it finds the same layouts.
 
 Local rather than Roaming is deliberate: a layout identifies monitors by the
 physical port they are plugged into, so roaming it to another machine would sync
 data that cannot match anything there. Delete `.dls` to start over.
 
-**Portable mode:** put an empty file called `.dls` next to `DLS.exe` and settings
-live there instead, travelling with the folder.
+**Portable mode:** put an empty file called `.dls` next to a standalone `DLS.exe`
+and settings live there instead, travelling with the folder. Use manual updates for
+this mode.
 
 ### Versioning
 
@@ -218,10 +244,19 @@ git tag v0.2.0
 git push --tags
 ```
 
-`.github/workflows/release.yml` then builds both variants on a Windows runner, derives
-every version number from the tag, writes `SHA256SUMS.txt`, and publishes a GitHub
-release with generated notes. A tag with a pre-release tail — `v0.2.0-alpha` — is
-marked as a pre-release, so it does not become the *Latest* download.
+Before tagging, update `RELEASE_NOTES.md`; its text appears in the in-app update
+dialog. `.github/workflows/release.yml` then builds the two standalone variants and
+a Velopack installer on a Windows runner. It derives versions from the tag, writes
+`SHA256SUMS.txt`, publishes an archive release in this private source repository,
+and publishes the installer and update packages to the public
+[`dls-display-layout-system-releases`](https://github.com/TaterOfTheValley/dls-display-layout-system-releases)
+repository. A tag with a pre-release tail such as `v0.2.0-alpha` is marked as a
+pre-release in both repositories.
+
+The private repository needs an Actions secret named `DLS_RELEASES_TOKEN`: a
+fine-grained GitHub token with **Contents: read and write** access scoped only to
+the public release repository. The workflow fails before publishing if it is absent.
+The public repository already has an initial commit so GitHub can create release tags.
 
 The tag is the only place a release version is set. `DLS.csproj` holds a default for
 local builds and is overridden by the workflow, so there is nothing to bump by hand.
@@ -231,8 +266,8 @@ local builds and is overridden by the workflow, so there is nothing to bump by h
 DLS itself is [MIT licensed](LICENSE).
 
 The self-contained build embeds the .NET 8 runtime. That runtime, the Windows Desktop
-runtime and `System.Text.Json` are MIT licensed, and their notice ships with every
-release. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+runtime, `System.Text.Json`, and Velopack are MIT licensed. Their notices ship with
+every release. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
 ## How it works
 

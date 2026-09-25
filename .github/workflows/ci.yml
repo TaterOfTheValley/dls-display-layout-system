@@ -29,4 +29,21 @@ jobs:
           -p:PublishSingleFile=true
           -p:EnableCompressionInSingleFile=true
           -p:DebugType=none
-          -o ${{ runner.temp }}/publish-smoke
+          -o ci-publish
+
+      - name: Smoke-test the installer package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp THIRD-PARTY-NOTICES.md ci-publish/
+          dotnet tool install --tool-path ci-tools vpk --version 1.2.0
+          ci-tools/vpk.exe pack \
+            --packId DLS-DisplayLayoutSystem \
+            --packTitle "DLS - Display Layout System" \
+            --packVersion 0.1.0-alpha \
+            --packDir ci-publish \
+            --mainExe DLS.exe \
+            --runtime win-x64 \
+            --noPortable true \
+            --releaseNotes RELEASE_NOTES.md \
+            --outputDir ci-pack

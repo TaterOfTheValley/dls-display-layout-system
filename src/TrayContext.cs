@@ -1,4 +1,5 @@
 using System.Drawing.Drawing2D;
+using Velopack;
 
 namespace DLS;
 
@@ -11,9 +12,14 @@ public class TrayContext : ApplicationContext
     private readonly FileSystemWatcher _profileWatcher;
     private readonly System.Windows.Forms.Timer _profileReloadTimer;
     private readonly System.Windows.Forms.Timer _hotkeyRecoveryTimer;
+    private readonly System.Windows.Forms.Timer _updateTimer;
+    private readonly UpdateManager _updateManager = UpdateService.CreateManager();
     private List<DisplayProfile> _profiles;
     private DisplayProfile? _activeProfile;
     private ConfigForm? _configForm;
+    private UpdateForm? _updateForm;
+    private UpdateInfo? _availableUpdate;
+    private bool _checkingUpdates;
     private bool _profileChangePending;
     private string _lastHandledProfileSignature = string.Empty;
     private bool _reloadingProfiles;
@@ -73,6 +79,16 @@ public class TrayContext : ApplicationContext
 
         _hotkeyRecoveryTimer = new System.Windows.Forms.Timer { Interval = 1000 };
         _hotkeyRecoveryTimer.Tick += (_, _) => TryRecoverHotkeys();
+
+        // The first check waits until startup has finished. Subsequent checks are
+        // infrequent, both for the user's sake and GitHub's anonymous API limit.
+        _updateTimer = new System.Windows.Forms.Timer { Interval = 15000 };
+        _updateTimer.Tick += async (_, _) =>
+        {
+            _updateTimer.Interval = 12 * 60 * 60 * 1000;
+            await CheckForUpdatesAsync(manual: false);
+        };
+        if (_updateManager.IsInstalled) _updateTimer.Start();
 
         RefreshMenuAndHotkeys();
         DetectActiveProfile();
@@ -325,6 +341,24 @@ public class TrayContext : ApplicationContext
         entries.Add(new TrayPopup.CommandEntry { Text = "Edit layouts\u2026", Invoke = ShowConfigWindow });
         entries.Add(new TrayPopup.SeparatorEntry());
 
+        if (_availableUpdate != null)
+        {
+            entries.Add(new TrayPopup.CommandEntry
+            {
+                Text = $"Update to DLS {_availableUpdate.TargetFullRelease.Version}",
+                Emphasis = true,
+                Invoke = ShowUpdateForm
+            });
+        }
+
+        entries.Add(new TrayPopup.CommandEntry
+        {
+            Text = "Check for updates\u2026",
+            Detail = _checkingUpdates ? "checking" : null,
+            Enabled = !_checkingUpdates,
+            Invoke = () => _ = CheckForUpdatesAsync(manual: true)
+        });
+
         var startup = StartupRegistration.Current;
         entries.Add(new TrayPopup.CommandEntry
         {
@@ -341,6 +375,109 @@ public class TrayContext : ApplicationContext
         entries.Add(new TrayPopup.CommandEntry { Text = "Exit", Invoke = ExitThread });
 
         _entries = entries;
+    }
+
+    private async Task CheckForUpdatesAsync(bool manual)
+    {
+        if (!_updateManager.IsInstalled)
+        {
+            if (manual && MessageBox.Show(
+                    "This copy of DLS was run as a standalone EXE. Install DLS once with " +
+                    "DLS-DisplayLayoutSystem-win-Setup.exe to enable in-app updates. Open the release page?",
+                    "DLS updates", MessageBoxButtons.YesNo, MessageBoxIcon.Information)
+                == DialogResult.Yes)
+            {
+                try
+                {
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+                        UpdateService.RepositoryUrl + "/releases") { UseShellExecute = true });
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"Could not open the release page: {ex.Message}",
+                        "DLS updates", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            }
+            return;
+        }
+
+        if (_checkingUpdates) return;
+        _checkingUpdates = true;
+        RefreshMenuAndHotkeys();
+        try
+        {
+            var found = await _updateManager.CheckForUpdatesAsync();
+            bool newlyFound = found != null &&
+                _availableUpdate?.TargetFullRelease.Version != found.TargetFullRelease.Version;
+            _availableUpdate = found;
+            RefreshMenuAndHotkeys();
+
+            if (found == null)
+            {
+                if (manual) MessageBox.Show($"DLS {AppInfo.Version} is up to date.",
+                    "DLS updates", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            else if (manual)
+            {
+                ShowUpdateForm();
+            }
+            else if (newlyFound)
+            {
+                _notifyIcon.ShowBalloonTip(6000, "DLS update available",
+                    $"Version {found.TargetFullRelease.Version} is ready. Open the DLS tray menu to install it.",
+                    ToolTipIcon.Info);
+            }
+        }
+        catch (Exception ex)
+        {
+            if (manual) MessageBox.Show($"Could not check for updates: {ex.Message}",
+                "DLS updates", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            _checkingUpdates = false;
+            RefreshMenuAndHotkeys();
+        }
+    }
+
+    private void ShowUpdateForm()
+    {
+        if (_availableUpdate == null) return;
+        if (_updateForm is { IsDisposed: false })
+        {
+            _updateForm.BringToFront();
+            return;
+        }
+
+        _updateForm = new UpdateForm(_updateManager, _availableUpdate, ApplyUpdate);
+        _updateForm.FormClosed += (_, _) => _updateForm = null;
+        _updateForm.Show();
+        _updateForm.BringToFront();
+    }
+
+    private bool ApplyUpdate(VelopackAsset release)
+    {
+        if (LayoutSafety.CanUndo)
+        {
+            MessageBox.Show("Keep or revert the current display change before updating.",
+                "DLS updates", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return false;
+        }
+
+        if (_configForm is { IsDisposed: false, HasUnsavedChanges: true })
+        {
+            _configForm.FlushPendingEdits();
+            if (_configForm.HasUnsavedChanges)
+            {
+                MessageBox.Show("DLS could not save your layout edits. Resolve the save error before updating.",
+                    "DLS updates", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+        }
+
+        _updateManager.WaitExitThenApplyUpdates(release);
+        ExitThread();
+        return true;
     }
 
     private void ToggleStartup()
@@ -491,6 +628,8 @@ public class TrayContext : ApplicationContext
         _profileReloadTimer.Dispose();
         _hotkeyRecoveryTimer.Stop();
         _hotkeyRecoveryTimer.Dispose();
+        _updateTimer.Stop();
+        _updateTimer.Dispose();
         _profileWatcher.Dispose();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
