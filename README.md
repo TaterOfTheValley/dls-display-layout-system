@@ -44,10 +44,9 @@ Windows 10 1607 or later. Windows 11 recommended.
 
 ## Install
 
-Download from the [DLS binary releases](https://github.com/TaterOfTheValley/dls-display-layout-system-releases/releases).
-The source repository stays private; this public repository contains install and
-update packages only. During the alpha period, use the releases list because
-GitHub's **Latest** link excludes prereleases.
+Download from the [DLS releases](https://github.com/TaterOfTheValley/dls-display-layout-system/releases).
+During the alpha period, use the releases list because GitHub's **Latest** link
+excludes prereleases.
 
 | Download | Use |
 |---|---|
@@ -245,18 +244,11 @@ git push --tags
 ```
 
 Before tagging, update `RELEASE_NOTES.md`; its text appears in the in-app update
-dialog. `.github/workflows/release.yml` then builds the two standalone variants and
-a Velopack installer on a Windows runner. It derives versions from the tag, writes
-`SHA256SUMS.txt`, publishes an archive release in this private source repository,
-and publishes the installer and update packages to the public
-[`dls-display-layout-system-releases`](https://github.com/TaterOfTheValley/dls-display-layout-system-releases)
-repository. A tag with a pre-release tail such as `v0.2.0-alpha` is marked as a
-pre-release in both repositories.
-
-The private repository needs an Actions secret named `DLS_RELEASES_TOKEN`: a
-fine-grained GitHub token with **Contents: read and write** access scoped only to
-the public release repository. The workflow fails before publishing if it is absent.
-The public repository already has an initial commit so GitHub can create release tags.
+dialog and on the GitHub release. `.github/workflows/release.yml` builds the two
+standalone variants and a Velopack installer on a Windows runner. It derives versions
+from the tag, writes `SHA256SUMS.txt`, and publishes all downloads and update packages
+to this repository's release using the workflow's `GITHUB_TOKEN`. A tag with a
+pre-release tail such as `v0.2.0-alpha` is marked as a pre-release.
 
 The tag is the only place a release version is set. `DLS.csproj` holds a default for
 local builds and is overridden by the workflow, so there is nothing to bump by hand.
