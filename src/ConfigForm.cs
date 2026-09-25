@@ -129,16 +129,53 @@ public class ConfigForm : Form
 
     private float DpiScale => _uiScale;
 
-    /// <summary>Scales a design pixel length. For geometry.</summary>
+    /// <summary>
+    /// The scale text is drawn at: the window's scale times Windows' Text size setting.
+    /// Read live rather than cached, so a rebuild after the setting moves picks it up.
+    /// </summary>
+    private float TextScale => _uiScale * UiScaling.TextScale;
+
+    /// <summary>Scales a design pixel length. For geometry that holds no text.</summary>
     private int S(int val) => (int)Math.Round(val * DpiScale);
 
     /// <summary>
-    /// Scales a design font size, for a font that will be assigned to a control.
-    /// Not interchangeable with <see cref="S"/> — see <see cref="UiScaling"/> for why
-    /// the two do not come out the same. Fonts drawn in a Paint handler use DpiScale
-    /// directly; only fonts that become a <see cref="Control.Font"/> come through here.
+    /// Scales a design pixel length that exists to hold text — a row, a button, a band
+    /// of labels. These grow with the Text size setting where plain geometry does not;
+    /// otherwise a larger setting just cuts the bottoms off the letters.
     /// </summary>
-    private float F(float designPx) => UiScaling.ControlFontPx(designPx, _uiScale, DeviceDpi);
+    private int T(int val) => (int)Math.Round(val * TextScale);
+
+    /// <summary>
+    /// Scales a design font size, for a font that will be assigned to a control.
+    /// Not interchangeable with <see cref="P"/> — see <see cref="UiScaling"/> for why
+    /// the two do not come out the same. Fonts drawn in a Paint handler use
+    /// <see cref="P"/>; only fonts that become a <see cref="Control.Font"/> come
+    /// through here.
+    /// </summary>
+    private float F(float designPx) => UiScaling.ControlFontPx(designPx, TextScale, DeviceDpi);
+
+    /// <summary>Scales a design font size for a font drawn directly in a Paint handler.</summary>
+    private float P(float designPx) => designPx * TextScale;
+
+    /// <summary>
+    /// The height of a box designed at <paramref name="box"/> pixels to hold one line
+    /// of text at each of <paramref name="lines"/>: its design height at the display
+    /// scale, plus however much taller those lines get at the Text size setting.
+    ///
+    /// Only the text grows, not the padding around it — a 40px button holding 12px text
+    /// at 225% text needs to be 40px plus the extra line height, not 90px. Scaling the
+    /// whole box with the text was what gave the first attempt at this its cavernous
+    /// footer and a canvas squeezed down to nothing.
+    /// </summary>
+    private int Hold(int box, params float[] lines)
+    {
+        int height = S(box);
+        foreach (float px in lines)
+        {
+            height += UiType.LineHeight(P(px)) - UiType.LineHeight(px * DpiScale);
+        }
+        return height;
+    }
 
     /// <summary>
     /// One control's width in a row that has to fit: its preferred size while there is
@@ -154,11 +191,20 @@ public class ConfigForm : Form
     private int DesignClientW => _uiScale > 0.01f ? (int)Math.Round(ClientSize.Width / _uiScale) : ClientSize.Width;
     private int DesignClientH => _uiScale > 0.01f ? (int)Math.Round(ClientSize.Height / _uiScale) : ClientSize.Height;
 
-    /// <summary>Short enough that the fixed bands have to give space back to the canvas.</summary>
-    private bool Compact => DesignClientH < CompactBelowH;
+    /// <summary>Short enough that the fixed bands have to give space back to the canvas.
+    /// The bands are mostly text, so larger text needs a taller window before they fit.</summary>
+    private bool Compact => DesignClientH < CompactBelowH * TextGrowth;
 
-    /// <summary>Narrow enough that a row of controls has to be split across two.</summary>
-    private bool Narrow => DesignClientW < NarrowBelowW;
+    /// <summary>Narrow enough that a row of controls has to be split across two. The
+    /// row is mostly labelled buttons, so it too runs out of room sooner as text grows.</summary>
+    private bool Narrow => DesignClientW < NarrowBelowW * TextGrowth;
+
+    /// <summary>
+    /// How much bigger the window's text-bearing parts get at the current Text size,
+    /// as a single factor. Half the setting's own: boxes grow by their text but not by
+    /// their padding, and the canvas, the biggest part of the window, not at all.
+    /// </summary>
+    private static float TextGrowth => 1f + (UiScaling.TextScale - 1f) / 2f;
 
     public ConfigForm(List<DisplayProfile> profiles, Action onSaveCallback)
     {
@@ -309,7 +355,7 @@ public class ConfigForm : Form
         _addTile = null;            // ApplyDensity runs before the rail is rebuilt
         foreach (var control in stale) control.Dispose();
 
-        Font = new Font("Segoe UI", F(9.5f), FontStyle.Regular, GraphicsUnit.Pixel);
+        Font = UiType.Create(F(UiType.Body));
 
         // There is no in-app title bar any more — the window already carries the app
         // name, and that band was 52px of pure repetition. The vertical layout rail is
@@ -352,9 +398,9 @@ public class ConfigForm : Form
         bool compact = Compact;
 
         _rail.Height = RailCardHeight + S(compact ? 20 : 30);
-        _metaBar.Height = S(compact ? 68 : 76);
-        _inspector.Height = S(compact ? 104 : 118);
-        _footer.Height = S(compact ? 56 : 70);
+        _metaBar.Height = MetaRows(compact).Height;
+        _inspector.Height = InspectorHeight(compact);
+        _footer.Height = Hold(compact ? 56 : 70, UiType.Body);
 
         // The cards are resized in place rather than rebuilt: PaintLayoutCard reads the
         // card's own height to decide how many lines it has room for, and rebuilding
@@ -367,7 +413,7 @@ public class ConfigForm : Form
             view.CardPanel.Size = cardSize;
             view.CardPanel.Invalidate();
         }
-        if (_addTile != null) _addTile.Size = new Size(S(compact ? 108 : 132), RailCardHeight);
+        if (_addTile != null) _addTile.Size = new Size(T(compact ? 108 : 132), RailCardHeight);
 
         UpdateHintVisibility();
     }
@@ -382,8 +428,8 @@ public class ConfigForm : Form
     private void UpdateHintVisibility()
     {
         if (_hotkeyHint == null) return;
-        _hotkeyHint.Height = S(22);
-        _hotkeyHint.Visible = _profiles.Count > 0 && DesignClientH >= 560;
+        _hotkeyHint.Height = Hold(22, UiType.Caption);
+        _hotkeyHint.Visible = _profiles.Count > 0 && DesignClientH >= 560 * TextGrowth;
     }
 
     protected override void OnResize(EventArgs e)
@@ -440,8 +486,14 @@ public class ConfigForm : Form
         // Sizing has to be done on the whole window, not the client area: the caption
         // and border are another ~80px at 225%, and a client area sized exactly to the
         // work area puts that much of the window off the bottom of the screen.
+        // Larger text asks for a larger window, but only halfway: the canvas is most
+        // of the window and holds no text, so growing it one-for-one would spend the
+        // whole screen on it before any of the text had room to breathe.
         var frame = Size - ClientSize;
-        var wanted = new Size(S(DesignW) + frame.Width, S(DesignH) + frame.Height);
+        float grow = TextGrowth;
+        var wanted = new Size(
+            (int)Math.Round(S(DesignW) * grow) + frame.Width,
+            (int)Math.Round(S(DesignH) * grow) + frame.Height);
         if (work.Width > 0 && work.Height > 0)
         {
             wanted = new Size(Math.Min(wanted.Width, work.Width), Math.Min(wanted.Height, work.Height));
@@ -549,8 +601,8 @@ public class ConfigForm : Form
     {
         _emptyPanel = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.Panel, Visible = false };
 
-        var capture = UiTheme.MakeButton("Save this as my first layout", true, DpiScale, F(9.5f));
-        capture.Size = new Size(S(260), S(40));
+        var capture = UiTheme.MakeButton("Save this as my first layout", true, TextScale, F(UiType.Body));
+        capture.Size = new Size(T(260), Hold(40, UiType.Body));
         capture.Click += (_, _) => CaptureFirstLayout();
         _emptyPanel.Controls.Add(capture);
 
@@ -559,9 +611,10 @@ public class ConfigForm : Form
             var g = e.Graphics;
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
 
-            int w = Math.Min(S(520), _emptyPanel.Width - S(48));
+            var block = EmptyStateBlock();
+            int w = Math.Min(Math.Max(S(520), T(520)), _emptyPanel.Width - S(48));
             int cx = _emptyPanel.Width / 2;
-            int top = Math.Max(S(24), _emptyPanel.Height / 2 - S(150));
+            int top = EmptyStateTop(block);
 
             var glyph = new RectangleF(cx - w / 2f, top, w, S(130));
             LayoutGlyph.Draw(g, glyph, _liveForEmptyState,
@@ -571,30 +624,53 @@ public class ConfigForm : Form
                 cornerRadius: 4f);
 
             using var centre = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-            using var head = new Font("Segoe UI", 19f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel);
+            using var head = UiType.CreateDisplay(P(UiType.Title));
             using var headBrush = new SolidBrush(UiTheme.Text);
             g.DrawString(_liveForEmptyState.Count == 1
                     ? "This is your monitor, right now."
                     : $"These are your {_liveForEmptyState.Count} monitors, right now.",
-                head, headBrush, new RectangleF(cx - w / 2f, top + S(150), w, S(30)), centre);
+                head, headBrush, new RectangleF(cx - w / 2f, top + block.HeadY, w, block.HeadH), centre);
 
-            using var sub = new Font("Segoe UI", 12f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel);
+            using var sub = UiType.Create(P(UiType.BodyLarge));
             using var subBrush = new SolidBrush(UiTheme.Muted);
             g.DrawString(_liveForEmptyState.Count == 1
                     ? "Save it, then add more layouts as you connect more monitors."
                     : "Save this arrangement, then make a second layout with some of them turned off.",
-                sub, subBrush, new RectangleF(cx - w / 2f, top + S(184), w, S(24)), centre);
+                sub, subBrush, new RectangleF(cx - w / 2f, top + block.SubY, w, block.SubH), centre);
         };
 
         _emptyPanel.Resize += (_, _) =>
         {
-            int top = Math.Max(S(24), _emptyPanel.Height / 2 - S(150));
-            capture.Location = new Point((_emptyPanel.Width - capture.Width) / 2, top + S(212));
+            var block = EmptyStateBlock();
+            capture.Location = new Point((_emptyPanel.Width - capture.Width) / 2, EmptyStateTop(block) + block.ButtonY);
             _emptyPanel.Invalidate();
         };
 
         return _emptyPanel;
     }
+
+    /// <summary>Vertical offsets within the empty state's centred block: the picture of
+    /// the monitors, a heading, a line under it, and the button.</summary>
+    private readonly record struct EmptyBlock(int HeadY, int HeadH, int SubY, int SubH, int ButtonY, int Height);
+
+    /// <summary>
+    /// Stacks the empty state from the text it holds. The picture stays its own size;
+    /// each line of text below it is as tall as the text in it, and the button goes
+    /// after the last, so larger text pushes things down rather than into each other.
+    /// </summary>
+    private EmptyBlock EmptyStateBlock()
+    {
+        int headY = S(150);
+        int headH = Hold(30, UiType.Title);
+        int subY = headY + headH + S(4);
+        int subH = Hold(24, UiType.BodyLarge);
+        int buttonY = subY + subH + S(4);
+        return new EmptyBlock(headY, headH, subY, subH, buttonY, buttonY + Hold(40, UiType.Body));
+    }
+
+    /// <summary>Centres the empty state's block in the panel, but never above its top padding.</summary>
+    private int EmptyStateTop(EmptyBlock block) =>
+        _emptyPanel == null ? S(24) : Math.Max(S(24), (_emptyPanel.Height - block.Height) / 2);
 
     private void CaptureFirstLayout()
     {
@@ -636,7 +712,7 @@ public class ConfigForm : Form
     {
         var root = new Panel { Dock = DockStyle.Fill, BackColor = UiTheme.Panel };
 
-        _canvas = new MonitorCanvas { Dock = DockStyle.Fill, UiScale = DpiScale };
+        _canvas = new MonitorCanvas { Dock = DockStyle.Fill, UiScale = DpiScale, TextScale = TextScale };
         _canvas.LayoutChanged += (_, _) =>
         {
             UpdateInspector();
@@ -655,10 +731,11 @@ public class ConfigForm : Form
         _hotkeyHint = new Label
         {
             Dock = DockStyle.Bottom,
-            Height = S(22),
+            Height = Hold(22, UiType.Caption),
             ForeColor = UiTheme.Muted,
-            Font = new Font("Segoe UI", F(8.5f), FontStyle.Regular, GraphicsUnit.Pixel),
+            Font = UiType.Create(F(UiType.Caption)),
             Text = CanvasHintText,
+            AutoEllipsis = true,
             TextAlign = ContentAlignment.MiddleLeft
         };
 
@@ -681,25 +758,25 @@ public class ConfigForm : Form
     /// </summary>
     private Control BuildCanvasTools()
     {
-        var tools = new BufferedPanel { BackColor = UiTheme.Card, Height = S(38) };
+        var tools = new BufferedPanel { BackColor = UiTheme.Card, Height = Hold(38, UiType.Body) };
         tools.Paint += (_, e) =>
         {
             using var pen = new Pen(UiTheme.Line);
             e.Graphics.DrawRectangle(pen, 0, 0, tools.Width - 1, tools.Height - 1);
         };
 
-        _fitBtn = UiTheme.MakeButton("Fit", false, DpiScale, F(9.5f));
-        _fitBtn.Size = new Size(S(58), S(28));
+        _fitBtn = UiTheme.MakeButton("Fit", false, TextScale, F(UiType.Body));
+        _fitBtn.Size = new Size(T(58), Hold(28, UiType.Body));
         _fitBtn.Click += (_, _) => _canvas.FitView();
         _tips.SetToolTip(_fitBtn, "Fit all monitors in view");
 
-        _identifyAllBtn = UiTheme.MakeButton("Identify", false, DpiScale, F(9.5f));
-        _identifyAllBtn.Size = new Size(S(84), S(28));
+        _identifyAllBtn = UiTheme.MakeButton("Identify", false, TextScale, F(UiType.Body));
+        _identifyAllBtn.Size = new Size(T(84), Hold(28, UiType.Body));
         _identifyAllBtn.Click += (_, _) => IdentifyOverlays.ShowAll();
         _tips.SetToolTip(_identifyAllBtn, "Flash numbers on the physical monitors");
 
-        _refreshBtn = UiTheme.MakeButton("Rescan", false, DpiScale, F(9.5f));
-        _refreshBtn.Size = new Size(S(78), S(28));
+        _refreshBtn = UiTheme.MakeButton("Rescan", false, TextScale, F(UiType.Body));
+        _refreshBtn.Size = new Size(T(78), Hold(28, UiType.Body));
         _refreshBtn.Click += (_, _) => RefreshDisplays();
         _tips.SetToolTip(_refreshBtn, "Re-scan connected monitors");
 
@@ -709,7 +786,7 @@ public class ConfigForm : Form
             Checked = true,
             ForeColor = UiTheme.Text,
             BackColor = UiTheme.Card,
-            Font = new Font("Segoe UI", F(11f), FontStyle.Regular, GraphicsUnit.Pixel),
+            Font = UiType.Create(F(UiType.Body)),
             AutoSize = true,
             Cursor = Cursors.Hand
         };
@@ -720,11 +797,11 @@ public class ConfigForm : Form
 
         void Place()
         {
-            int pad = S(5);
+            int pad = (tools.Height - _fitBtn.Height) / 2;
             int gap = S(6);
-            int x = pad;
-            _snapToggle.Location = new Point(x, (tools.Height - Math.Max(S(16), _snapToggle.Height)) / 2);
-            x += Math.Max(S(52), _snapToggle.Width) + gap + S(4);
+            int x = pad + S(4);
+            _snapToggle.Location = new Point(x, (tools.Height - _snapToggle.Height) / 2);
+            x += Math.Max(T(52), _snapToggle.Width) + gap + S(4);
             foreach (var b in new[] { _fitBtn, _identifyAllBtn, _refreshBtn })
             {
                 b.Location = new Point(x, pad);
@@ -750,7 +827,7 @@ public class ConfigForm : Form
         var panel = new BufferedPanel
         {
             Dock = DockStyle.Bottom,
-            Height = S(Compact ? 104 : 118),
+            Height = InspectorHeight(Compact),
             BackColor = UiTheme.Card,
             Padding = new Padding(S(18), 0, S(18), 0)
         };
@@ -762,14 +839,14 @@ public class ConfigForm : Form
 
         _inspectorTitle = new Label
         {
-            Font = new Font("Segoe UI", F(10.5f), FontStyle.Bold, GraphicsUnit.Pixel),
+            Font = UiType.Create(F(UiType.BodyLarge), FontStyle.Bold),
             ForeColor = UiTheme.Text,
             AutoSize = false,
             TextAlign = ContentAlignment.MiddleLeft
         };
         _inspectorSub = new Label
         {
-            Font = new Font("Segoe UI", F(8.5f), FontStyle.Regular, GraphicsUnit.Pixel),
+            Font = UiType.Create(F(UiType.Body)),
             ForeColor = UiTheme.Muted,
             AutoSize = false,
             TextAlign = ContentAlignment.MiddleLeft
@@ -779,7 +856,7 @@ public class ConfigForm : Form
         {
             Text = "Include in layout",
             ForeColor = UiTheme.Text,
-            Font = new Font("Segoe UI", F(9f), FontStyle.Regular, GraphicsUnit.Pixel),
+            Font = UiType.Create(F(UiType.Body)),
             AutoSize = true,
             Cursor = Cursors.Hand
         };
@@ -790,7 +867,7 @@ public class ConfigForm : Form
             UpdateInspector();
         };
 
-        _primaryBtn = UiTheme.MakeButton("Set as main", false, DpiScale, F(9.5f));
+        _primaryBtn = UiTheme.MakeButton("Set as main", false, TextScale, F(UiType.Body));
         _primaryBtn.Size = new Size(S(135), S(34));
         _primaryBtn.Click += (_, _) =>
         {
@@ -798,16 +875,16 @@ public class ConfigForm : Form
             UpdateInspector();
         };
 
-        _identifyOneBtn = UiTheme.MakeButton("Identify", false, DpiScale, F(9.5f));
+        _identifyOneBtn = UiTheme.MakeButton("Identify", false, TextScale, F(UiType.Body));
         _identifyOneBtn.Size = new Size(S(105), S(34));
         _identifyOneBtn.Click += (_, _) =>
         {
             if (_canvas.SelectedConfig != null) IdentifyOverlays.Show(_canvas.SelectedConfig.DeviceName);
         };
 
-        var resolutionLabel = UiTheme.MakeEyebrow("RESOLUTION", F(8.5f));
-        var refreshLabel = UiTheme.MakeEyebrow("REFRESH", F(8.5f));
-        var scaleLabel = UiTheme.MakeEyebrow("SCALE", F(8.5f));
+        var resolutionLabel = UiTheme.MakeEyebrow("RESOLUTION", F(UiType.Caption));
+        var refreshLabel = UiTheme.MakeEyebrow("REFRESH", F(UiType.Caption));
+        var scaleLabel = UiTheme.MakeEyebrow("SCALE", F(UiType.Caption));
 
         _resolutionBox = MakeCombo();
         _resolutionBox.SelectedIndexChanged += (_, _) => ResolutionChanged();
@@ -821,8 +898,9 @@ public class ConfigForm : Form
             bool compact = Compact;
             int pad = S(18);
             int gap = S(10);
-            int rowH = S(30);
-            int titleY = S(compact ? 6 : 10);
+            var rows = InspectorRows(compact);
+            int rowH = Math.Max(rows.RowH, _resolutionBox.Height);
+            int titleY = rows.TitleY;
 
             // Three mode controls and three actions do not both fit on one row in a
             // narrow window — they used to be laid out as though they did, which put
@@ -830,12 +908,12 @@ public class ConfigForm : Form
             // tight, the actions move up beside the monitor's name, where there is
             // room going spare, and the mode controls get the whole width.
             bool stacked = Narrow;
-            int actionsY = stacked ? titleY - S(4) : S(compact ? 48 : 58);
-            int actionsH = stacked ? S(26) : rowH;
+            int actionsY = stacked ? titleY - S(4) : rows.BoxY;
+            int actionsH = stacked ? Hold(26, UiType.Body) : rowH;
 
             int right = panel.Width - pad;
-            int identifyW = Fit(panel.Width, S(105), S(78), 0.14f);
-            int primaryW = Fit(panel.Width, S(135), S(96), 0.18f);
+            int identifyW = Fit(panel.Width, T(105), T(78), 0.14f);
+            int primaryW = Fit(panel.Width, T(135), T(96), 0.18f);
 
             _identifyOneBtn.SetBounds(right - identifyW, actionsY, identifyW, actionsH);
             _primaryBtn.SetBounds(_identifyOneBtn.Left - S(8) - primaryW, actionsY, primaryW, actionsH);
@@ -845,16 +923,15 @@ public class ConfigForm : Form
 
             // Mode controls, left to right, sharing whatever the row has.
             int boxesRight = stacked ? panel.Width - pad : _includeToggle.Left - S(20);
-            int available = Math.Max(S(210), boxesRight - pad);
-            int boxW = Math.Min(S(210), (available - gap * 2) / 3);
+            int available = Math.Max(T(210), boxesRight - pad);
+            int boxW = Math.Min(T(210), (available - gap * 2) / 3);
 
-            int boxY = S(compact ? 48 : 58);
             int x = pad;
             foreach (var (lbl, box) in new (Control, Control)[]
                      { (resolutionLabel, _resolutionBox), (refreshLabel, _refreshBox), (scaleLabel, _scaleBox) })
             {
-                lbl.SetBounds(x, S(compact ? 30 : 38), boxW, S(16));
-                box.SetBounds(x, boxY, boxW, rowH);
+                lbl.SetBounds(x, rows.LabelY, boxW, rows.LabelH);
+                box.SetBounds(x, rows.BoxY, boxW, rowH);
                 x += boxW + gap;
             }
 
@@ -862,9 +939,9 @@ public class ConfigForm : Form
             // thing to go, because everything in it is also shown on the monitor's
             // own tile on the canvas.
             int titleW = stacked
-                ? Math.Max(S(120), _includeToggle.Left - pad - S(12))
-                : Math.Max(S(160), panel.Width / 3);
-            _inspectorTitle.SetBounds(pad, titleY, titleW, S(22));
+                ? Math.Max(T(120), _includeToggle.Left - pad - S(12))
+                : Math.Max(T(160), panel.Width / 3);
+            _inspectorTitle.SetBounds(pad, titleY, titleW, rows.TitleH);
 
             // Positioned before the visibility decision, and never gated on reading
             // Visible back: Control.Visible reports whether the control is actually on
@@ -872,8 +949,8 @@ public class ConfigForm : Form
             // it was just set, and a SetBounds behind that test never runs at all.
             int subLeft = _inspectorTitle.Right + S(14);
             int subW = Math.Max(S(20), panel.Width - subLeft - pad);
-            _inspectorSub.SetBounds(subLeft, titleY + S(2), subW, S(20));
-            _inspectorSub.Visible = !stacked && subW > S(140);
+            _inspectorSub.SetBounds(subLeft, titleY, subW, rows.TitleH);
+            _inspectorSub.Visible = !stacked && subW > T(140);
         };
 
         panel.Controls.Add(_inspectorTitle);
@@ -891,13 +968,37 @@ public class ConfigForm : Form
         return panel;
     }
 
+    /// <summary>Where the inspector's rows sit, worked out from the text they hold.</summary>
+    private readonly record struct InspectorLayout(
+        int TitleY, int TitleH, int LabelY, int LabelH, int BoxY, int RowH, int Height);
+
+    /// <summary>
+    /// The inspector's rows, top to bottom: the monitor's name, the mode labels, the
+    /// mode boxes. Each row is as tall as its text needs, and each starts where the one
+    /// above ends — the fixed offsets these replace put the labels on top of the boxes
+    /// as soon as the text grew.
+    /// </summary>
+    private InspectorLayout InspectorRows(bool compact)
+    {
+        int titleY = S(compact ? 6 : 10);
+        int titleH = Hold(22, UiType.BodyLarge);
+        int labelY = titleY + titleH + S(compact ? 2 : 6);
+        int labelH = Hold(16, UiType.Caption);
+        int boxY = labelY + labelH + S(compact ? 2 : 4);
+        int rowH = Hold(30, UiType.Body);
+        int height = boxY + rowH + S(compact ? 26 : 30);
+        return new InspectorLayout(titleY, titleH, labelY, labelH, boxY, rowH, height);
+    }
+
+    private int InspectorHeight(bool compact) => InspectorRows(compact).Height;
+
     private ComboBox MakeCombo() => new()
     {
         DropDownStyle = ComboBoxStyle.DropDownList,
         FlatStyle = FlatStyle.Flat,
         BackColor = UiTheme.Input,
         ForeColor = UiTheme.Text,
-        Font = new Font("Segoe UI", F(9.5f), FontStyle.Regular, GraphicsUnit.Pixel)
+        Font = UiType.Create(F(UiType.Body))
     };
 
     /// <summary>The mode list for the selected monitor, cached for the current selection.</summary>
@@ -1008,7 +1109,7 @@ public class ConfigForm : Form
         var footer = new Panel
         {
             Dock = DockStyle.Bottom,
-            Height = S(Compact ? 56 : 70),
+            Height = Hold(Compact ? 56 : 70, UiType.Body),
             BackColor = UiTheme.Panel,
             Padding = new Padding(S(24), 0, S(20), 0)
         };
@@ -1021,8 +1122,9 @@ public class ConfigForm : Form
         _feedbackLabel = new Label
         {
             ForeColor = UiTheme.Gold,
-            Font = new Font("Segoe UI", F(9f), FontStyle.Italic, GraphicsUnit.Pixel),
+            Font = UiType.Create(F(UiType.Body), FontStyle.Italic),
             AutoSize = false,
+            AutoEllipsis = true,
             TextAlign = ContentAlignment.MiddleLeft
         };
 
@@ -1035,21 +1137,21 @@ public class ConfigForm : Form
         _statusLabel = new Label
         {
             ForeColor = UiTheme.Muted,
-            Font = new Font("Segoe UI", F(9.5f), FontStyle.Regular, GraphicsUnit.Pixel),
+            Font = UiType.Create(F(UiType.Body)),
             AutoSize = false,
             AutoEllipsis = true,
             TextAlign = ContentAlignment.MiddleRight
         };
 
-        _cancelBtn = UiTheme.MakeButton("Close", false, DpiScale, F(9.5f));
-        _cancelBtn.Size = new Size(S(100), S(40));
+        _cancelBtn = UiTheme.MakeButton("Close", false, TextScale, F(UiType.Body));
+        _cancelBtn.Size = new Size(T(100), Hold(40, UiType.Body));
         _cancelBtn.Click += (_, _) => Close();
 
         // One commit action. Edits persist on their own (see MarkDirty), so there is
         // nothing left for a Save button to do, and "apply without saving" was a
         // distinction with no meaning once saving is automatic.
-        _applyBtn = UiTheme.MakeButton("Apply layout", true, DpiScale, F(9.5f));
-        _applyBtn.Size = new Size(S(150), S(40));
+        _applyBtn = UiTheme.MakeButton("Apply layout", true, TextScale, F(UiType.Body));
+        _applyBtn.Size = new Size(T(150), Hold(40, UiType.Body));
         _applyBtn.Click += (_, _) => ApplySelected();
         _tips.SetToolTip(_applyBtn, "Switch Windows to this layout. It reverts by itself unless you confirm.");
 
@@ -1058,14 +1160,14 @@ public class ConfigForm : Form
             // Apply is the one control in this window that must never be squeezed out
             // or pushed off the edge, so it is placed first and everything else takes
             // what is left.
-            int applyW = Fit(footer.Width, S(150), S(104), 0.20f);
-            int cancelW = Fit(footer.Width, S(100), S(72), 0.13f);
-            int btnH = Math.Min(S(40), footer.Height - S(14));
+            int applyW = Fit(footer.Width, T(150), T(104), 0.20f);
+            int cancelW = Fit(footer.Width, T(100), T(72), 0.13f);
+            int btnH = Math.Min(Hold(40, UiType.Body), footer.Height - S(14));
 
             _applyBtn.SetBounds(footer.Width - applyW - S(20), (footer.Height - btnH) / 2, applyW, btnH);
             _cancelBtn.SetBounds(_applyBtn.Left - S(10) - cancelW, (footer.Height - btnH) / 2, cancelW, btnH);
 
-            int statusW = Math.Min(S(320), Math.Max(S(120), _cancelBtn.Left - S(200)));
+            int statusW = Math.Min(T(320), Math.Max(T(120), _cancelBtn.Left - T(200)));
             _statusLabel.SetBounds(_cancelBtn.Left - S(18) - statusW, 0, statusW, footer.Height);
 
             // The transient "what just happened" line shares the row with the standing
@@ -1074,7 +1176,7 @@ public class ConfigForm : Form
             // where Apply is — is the one worth keeping.
             int feedbackW = _statusLabel.Left - S(36);
             _feedbackLabel.SetBounds(S(24), 0, Math.Max(S(20), feedbackW), footer.Height);
-            _feedbackLabel.Visible = feedbackW >= S(80);
+            _feedbackLabel.Visible = feedbackW >= T(80);
         };
 
         footer.Controls.Add(_feedbackLabel);
@@ -1090,23 +1192,24 @@ public class ConfigForm : Form
         _undoPanel = new Panel
         {
             Dock = DockStyle.Bottom,
-            Height = S(42),
+            Height = Hold(42, UiType.Body),
             BackColor = UiTheme.CardActive,
             Visible = false
         };
         _undoLabel = new Label
         {
             ForeColor = UiTheme.Gold,
-            Font = new Font("Segoe UI", F(9f), FontStyle.Regular, GraphicsUnit.Pixel),
+            Font = UiType.Create(F(UiType.Body)),
             AutoSize = false,
+            AutoEllipsis = true,
             TextAlign = ContentAlignment.MiddleLeft
         };
-        _undoBtn = UiTheme.MakeButton("Undo layout", true, DpiScale, F(9.5f));
-        _undoBtn.Size = new Size(S(130), S(30));
+        _undoBtn = UiTheme.MakeButton("Undo layout", true, TextScale, F(UiType.Body));
+        _undoBtn.Size = new Size(T(130), Hold(30, UiType.Body));
         _undoBtn.Click += (_, _) => UndoLayout();
         _undoPanel.Resize += (_, _) =>
         {
-            _undoBtn.Location = new Point(_undoPanel.Width - _undoBtn.Width - S(16), S(6));
+            _undoBtn.Location = new Point(_undoPanel.Width - _undoBtn.Width - S(16), (_undoPanel.Height - _undoBtn.Height) / 2);
             _undoLabel.SetBounds(S(16), 0, Math.Max(S(80), _undoBtn.Left - S(24)), _undoPanel.Height);
         };
         _undoPanel.Controls.Add(_undoLabel);
@@ -1122,8 +1225,10 @@ public class ConfigForm : Form
 
     /// <summary>Card size for the current density. The compact card drops the second
     /// text line rather than squeezing two lines into the space for one.</summary>
-    private int RailCardWidth => S(Compact ? 158 : RailCardW);
-    private int RailCardHeight => S(Compact ? 58 : RailCardH);
+    private int RailCardWidth => T(Compact ? 158 : RailCardW);
+    private int RailCardHeight => Compact
+        ? Hold(58, UiType.BodyLarge, UiType.Body)
+        : Hold(RailCardH, UiType.BodyLarge, UiType.Body, UiType.Caption);
 
     /// <summary>
     /// The layout picker, as a horizontal strip of thumbnails.
@@ -1176,20 +1281,20 @@ public class ConfigForm : Form
         var bar = new Panel
         {
             Dock = DockStyle.Top,
-            Height = S(76),
+            Height = MetaRows(Compact).Height,
             BackColor = UiTheme.Bg,
             Padding = new Padding(S(18), S(10), S(18), S(10))
         };
 
-        var nameLabel = UiTheme.MakeEyebrow("LAYOUT NAME", F(8.5f));
-        var shortcutLabel = UiTheme.MakeEyebrow("GLOBAL SHORTCUT", F(8.5f));
+        var nameLabel = UiTheme.MakeEyebrow("LAYOUT NAME", F(UiType.Caption));
+        var shortcutLabel = UiTheme.MakeEyebrow("GLOBAL SHORTCUT", F(UiType.Caption));
 
         _nameTextBox = new TextBox
         {
             BackColor = UiTheme.Input,
             ForeColor = Color.White,
             BorderStyle = BorderStyle.FixedSingle,
-            Font = new Font("Segoe UI", F(12f), FontStyle.Regular, GraphicsUnit.Pixel),
+            Font = UiType.Create(F(UiType.BodyLarge)),
             PlaceholderText = "Layout name"
         };
         _nameTextBox.TextChanged += (_, _) =>
@@ -1205,29 +1310,29 @@ public class ConfigForm : Form
             BackColor = UiTheme.Input,
             ForeColor = UiTheme.Gold,
             BorderStyle = BorderStyle.FixedSingle,
-            Font = new Font("Consolas", F(12f), FontStyle.Bold, GraphicsUnit.Pixel),
+            Font = UiType.CreateMono(F(UiType.BodyLarge), FontStyle.Bold),
             PlaceholderText = "Click, then press a shortcut",
             TextAlign = HorizontalAlignment.Center
         };
         _hotkeyTextBox.GotFocus += (_, _) => StartHotkeyCapture();
         _hotkeyTextBox.KeyDown += HotkeyTextBox_KeyDown;
-        _captureHotkeyBtn = UiTheme.MakeButton("Record", false, DpiScale, F(9.5f));
+        _captureHotkeyBtn = UiTheme.MakeButton("Record", false, TextScale, F(UiType.Body));
         _captureHotkeyBtn.Click += (_, _) => { _hotkeyTextBox.Focus(); StartHotkeyCapture(); };
         _tips.SetToolTip(_hotkeyTextBox, "Global shortcut that switches to this layout");
 
-        _captureCurrentLayoutBtn = UiTheme.MakeButton("Capture", false, DpiScale, F(9.5f));
+        _captureCurrentLayoutBtn = UiTheme.MakeButton("Capture", false, TextScale, F(UiType.Body));
         _captureCurrentLayoutBtn.Click += CaptureCurrentLayoutBtn_Click;
         _tips.SetToolTip(_captureCurrentLayoutBtn, "Replace this layout with the monitors as they are arranged right now");
 
-        _duplicateBtn = UiTheme.MakeButton("Duplicate", false, DpiScale, F(9.5f));
+        _duplicateBtn = UiTheme.MakeButton("Duplicate", false, TextScale, F(UiType.Body));
         _duplicateBtn.Click += DuplicateProfileBtn_Click;
         _tips.SetToolTip(_duplicateBtn, "Copy the selected layout");
 
-        _deleteProfileBtn = UiTheme.MakeButton("Delete", false, DpiScale, F(9.5f));
+        _deleteProfileBtn = UiTheme.MakeButton("Delete", false, TextScale, F(UiType.Body));
         _deleteProfileBtn.Click += DeleteProfileBtn_Click;
 
         // Kept for the empty state, which calls it directly.
-        _addProfileBtn = UiTheme.MakeButton("+ Add", false, DpiScale, F(9.5f));
+        _addProfileBtn = UiTheme.MakeButton("+ Add", false, TextScale, F(UiType.Body));
         _addProfileBtn.Click += AddProfileBtn_Click;
         _addProfileBtn.Visible = false;
 
@@ -1242,17 +1347,19 @@ public class ConfigForm : Form
             bool compact = Compact;
             int pad = S(18);
             int gap = S(8);
-            int y = S(compact ? 26 : 30);
-            int h = S(compact ? 30 : 34);
-            int labelY = S(compact ? 8 : 10);
+            var rows = MetaRows(compact);
+            int labelY = rows.LabelY;
+            int labelH = rows.LabelH;
+            int y = rows.RowY;
+            int h = Math.Max(rows.RowH, _nameTextBox.Height);
 
             int room = bar.Width - pad * 2;
 
             // The three layout actions shrink before anything else does: their labels
             // are short, so they stay readable a long way down.
-            int actionW = Fit(room, S(96), S(74), 0.20f);
-            int recordW = Fit(room, S(84), S(64), 0.11f);
-            int hotkeyW = Fit(room, S(220), S(150), 0.26f);
+            int actionW = Fit(room, T(96), T(74), 0.20f);
+            int recordW = Fit(room, T(84), T(64), 0.11f);
+            int hotkeyW = Fit(room, T(220), T(150), 0.26f);
 
             int right = bar.Width - pad;
             foreach (var b in new[] { _deleteProfileBtn, _duplicateBtn, _captureCurrentLayoutBtn })
@@ -1268,11 +1375,11 @@ public class ConfigForm : Form
 
             // Whatever is left is the name's, down to a floor that still shows a name
             // rather than one word of it.
-            int nameW = Math.Min(S(360), Math.Max(S(120), _hotkeyTextBox.Left - pad - S(20)));
+            int nameW = Math.Min(T(360), Math.Max(T(120), _hotkeyTextBox.Left - pad - S(20)));
             _nameTextBox.SetBounds(pad, y, nameW, h);
 
-            nameLabel.SetBounds(pad, labelY, nameW, S(16));
-            shortcutLabel.SetBounds(_hotkeyTextBox.Left, labelY, _hotkeyTextBox.Width, S(16));
+            nameLabel.SetBounds(pad, labelY, nameW, labelH);
+            shortcutLabel.SetBounds(_hotkeyTextBox.Left, labelY, _hotkeyTextBox.Width, labelH);
         };
 
         bar.Controls.AddRange(new Control[]
@@ -1282,6 +1389,22 @@ public class ConfigForm : Form
             _captureCurrentLayoutBtn, _duplicateBtn, _deleteProfileBtn, _addProfileBtn
         });
         return bar;
+    }
+
+    /// <summary>Where the name-and-shortcut bar's rows sit.</summary>
+    private readonly record struct MetaLayout(int LabelY, int LabelH, int RowY, int RowH, int Height);
+
+    /// <summary>
+    /// The bar's two rows, a caption over a row of boxes and buttons, each as tall as
+    /// its text needs. The row is sized for the name box, the largest text in it.
+    /// </summary>
+    private MetaLayout MetaRows(bool compact)
+    {
+        int labelY = S(compact ? 8 : 10);
+        int labelH = Hold(16, UiType.Caption);
+        int rowY = labelY + labelH + S(compact ? 2 : 4);
+        int rowH = Hold(compact ? 30 : 34, UiType.BodyLarge);
+        return new MetaLayout(labelY, labelH, rowY, rowH, rowY + rowH + S(12));
     }
 
     /// <summary>Rebuilds the layout thumbnails.</summary>
@@ -1322,7 +1445,7 @@ public class ConfigForm : Form
 
         var addTile = new BufferedPanel
         {
-            Width = S(Compact ? 108 : 132),
+            Width = T(Compact ? 108 : 132),
             Height = RailCardHeight,
             BackColor = UiTheme.Panel,
             Margin = new Padding(0),
@@ -1337,7 +1460,7 @@ public class ConfigForm : Form
             using var pen = new Pen(hot ? UiTheme.Gold : UiTheme.Line) { DashStyle = System.Drawing.Drawing2D.DashStyle.Dash };
             g.DrawRectangle(pen, 1, 1, addTile.Width - 3, addTile.Height - 3);
 
-            using var font = new Font("Segoe UI", 12f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel);
+            using var font = UiType.Create(P(UiType.BodyLarge));
             using var brush = new SolidBrush(hot ? UiTheme.Gold : UiTheme.Muted);
             using var centre = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
             g.DrawString("+  New layout", font, brush, addTile.ClientRectangle, centre);
@@ -1371,12 +1494,13 @@ public class ConfigForm : Form
         // lines into the room for two. The arrangement and the name are what let you
         // pick a layout out of the row; the shortcut is a reminder, and "LIVE" has
         // somewhere else to be said — the window title.
-        bool compact = card.Height < S(RailCardH);
+        bool compact = card.Height < Hold(RailCardH, UiType.BodyLarge, UiType.Body, UiType.Caption);
         int glyphW = compact ? S(44) : S(56);
         int textX = compact ? S(64) : S(78);
         int textW = card.Width - textX - S(12);
 
         // The arrangement, which is what actually distinguishes one layout from another.
+        // It is a picture, so it keeps its size when the text around it grows.
         LayoutGlyph.Draw(g,
             new RectangleF(S(12), compact ? S(10) : S(12), glyphW, compact ? S(26) : S(34)),
             view.Profile.Displays,
@@ -1390,32 +1514,34 @@ public class ConfigForm : Form
             FormatFlags = StringFormatFlags.NoWrap
         };
 
-        using (var nameFont = new Font("Segoe UI", (compact ? 12f : 13f) * DpiScale, FontStyle.Bold, GraphicsUnit.Pixel))
+        // Lines stack by their own heights, so a larger text size moves the second
+        // line down instead of drawing it over the first.
+        float y = compact ? S(8) : S(12);
+        using (var nameFont = UiType.Create(P(UiType.BodyLarge), FontStyle.Bold))
         using (var ink = new SolidBrush(selected ? UiTheme.Gold : UiTheme.Text))
         {
-            g.DrawString(view.Profile.Name, nameFont, ink,
-                new RectangleF(textX, compact ? S(8) : S(12), textW, S(20)), trim);
+            g.DrawString(view.Profile.Name, nameFont, ink, new RectangleF(textX, y, textW, nameFont.Height), trim);
+            y += nameFont.Height;
         }
 
         string sub = view.Profile.NeedsRecapture
             ? "Needs re-capture"
             : compact && view.IsLive ? "LIVE"
             : string.IsNullOrWhiteSpace(view.Profile.Hotkey) ? "No shortcut" : view.Profile.Hotkey;
-        using (var subFont = new Font("Segoe UI", (compact ? 10f : 11f) * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel))
+        using (var subFont = UiType.Create(P(UiType.Body)))
         using (var subInk = new SolidBrush(
                    view.Profile.NeedsRecapture ? UiTheme.Danger
                    : compact && view.IsLive ? UiTheme.Gold
                    : UiTheme.Muted))
         {
-            g.DrawString(sub, subFont, subInk,
-                new RectangleF(textX, compact ? S(28) : S(33), textW, S(18)), trim);
+            g.DrawString(sub, subFont, subInk, new RectangleF(textX, y, textW, subFont.Height), trim);
         }
 
         if (view.IsLive && !compact)
         {
-            using var liveFont = new Font("Segoe UI", 10f * DpiScale, FontStyle.Bold, GraphicsUnit.Pixel);
+            using var liveFont = UiType.Create(P(UiType.Caption), FontStyle.Bold);
             using var liveInk = new SolidBrush(UiTheme.Gold);
-            g.DrawString("LIVE", liveFont, liveInk, new PointF(textX, card.Height - S(24)));
+            g.DrawString("LIVE", liveFont, liveInk, new PointF(textX, card.Height - S(8) - liveFont.Height));
         }
     }
 

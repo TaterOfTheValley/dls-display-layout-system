@@ -51,6 +51,172 @@ internal static class UiScaling
     /// </summary>
     public static float ControlFontPx(float designPx, float uiScale, int deviceDpi) =>
         designPx * uiScale * InitialDpi / Math.Max(96, deviceDpi);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromPoint(Point pt, uint dwFlags);
+
+    [System.Runtime.InteropServices.DllImport("shcore.dll")]
+    private static extern int GetDpiForMonitor(IntPtr hmonitor, int dpiType, out uint dpiX, out uint dpiY);
+
+    private const uint MonitorDefaultToNearest = 2;
+    private const int MdtEffectiveDpi = 0;
+
+    /// <summary>
+    /// The scale factor of the monitor under <paramref name="point"/>, for a window
+    /// about to be placed there before it has a handle to ask with.
+    ///
+    /// The desktop DC is no substitute: in a per-monitor-aware process it reports the
+    /// primary monitor's scale as it was when the process started, whichever screen
+    /// the question is about.
+    /// </summary>
+    public static float DpiScaleAt(Point point)
+    {
+        var monitor = MonitorFromPoint(point, MonitorDefaultToNearest);
+        if (monitor != IntPtr.Zero && GetDpiForMonitor(monitor, MdtEffectiveDpi, out uint dpi, out _) == 0 && dpi > 0)
+        {
+            return dpi / 96f;
+        }
+        return InitialDpi / 96f;
+    }
+
+    private static float _textScale;
+
+    /// <summary>
+    /// Windows' own "Text size" setting (Settings › Accessibility › Text size), as a
+    /// multiplier from 1 to 2.25.
+    ///
+    /// It is separate from the display scale and applies on top of it: someone at
+    /// 100% scaling with text at 150% wants the same boxes with bigger words in them.
+    /// Nothing in WinForms reads it — the system fonts it would otherwise inherit are
+    /// replaced throughout this app by pixel-sized ones — so it has to be applied here,
+    /// to text and to the geometry that has to hold text, and not to anything else.
+    /// </summary>
+    public static float TextScale
+    {
+        get
+        {
+            if (_textScale <= 0) _textScale = ReadTextScale();
+            return _textScale;
+        }
+    }
+
+    /// <summary>Set by the <c>--text-scale</c> command-line switch, so every text size
+    /// can be checked without changing the setting for the whole machine.</summary>
+    public static float? TextScaleOverride { get; set; }
+
+    /// <summary>
+    /// Re-reads the setting. Windows broadcasts a settings change when it moves but
+    /// says nothing about what moved, so callers re-read on any change and act only if
+    /// this reports that the value is actually different.
+    /// </summary>
+    public static bool RefreshTextScale()
+    {
+        float previous = TextScale;
+        _textScale = ReadTextScale();
+        return Math.Abs(previous - _textScale) > 0.001f;
+    }
+
+    private static float ReadTextScale()
+    {
+        if (TextScaleOverride is { } forced) return Math.Clamp(forced, 1f, 2.25f);
+
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Accessibility");
+            if (key?.GetValue("TextScaleFactor") is int percent) return Math.Clamp(percent, 100, 225) / 100f;
+        }
+        catch (Exception ex) when (ex is System.Security.SecurityException or IOException or UnauthorizedAccessException)
+        {
+            // Unreadable is the same as unset: text at its normal size.
+        }
+        return 1f;
+    }
+}
+
+/// <summary>
+/// The app's type ramp: every text size, in design pixels at 100% scale.
+///
+/// Anchored to Windows' own sizes rather than chosen per control, so the app reads as
+/// part of the system rather than a smaller thing sitting on it. Windows draws body
+/// text — title bars, menus, message boxes, Explorer — at 9pt, which is 12px at
+/// 100%; captions sit a step below and headings above. Before this ramp the editor's
+/// body text was 9.5px, around 7pt, and every window looked a size smaller than
+/// everything around it.
+/// </summary>
+internal static class UiType
+{
+    /// <summary>Uppercase labels, badges, footnotes.</summary>
+    public const float Caption = 11f;
+
+    /// <summary>Anything that is not a caption or a heading. Windows' 9pt.</summary>
+    public const float Body = 12f;
+
+    /// <summary>Text the eye should land on first within a group: a monitor's name,
+    /// an edited value.</summary>
+    public const float BodyLarge = 14f;
+
+    public const float Subtitle = 16f;
+
+    public const float Title = 22f;
+
+    /// <summary>
+    /// Segoe UI Variable where Windows 11 has it, since that is what its own UI is set
+    /// in; plain Segoe UI everywhere else. Probed rather than assumed: GDI+ silently
+    /// substitutes Microsoft Sans Serif for a family it cannot find.
+    /// </summary>
+    public static readonly string Family = Resolve("Segoe UI Variable Text", "Segoe UI");
+
+    /// <summary>The optical-size cut for headings and big numerals, where the Text cut
+    /// looks loose. Chosen by role rather than by pixel size, since a body line at 225%
+    /// is as many pixels as a heading at 100%.</summary>
+    public static readonly string DisplayFamily = Resolve("Segoe UI Variable Display", Family);
+
+    public const string MonoFamily = "Consolas";
+
+    /// <summary>A UI font at an already-scaled pixel size.</summary>
+    public static Font Create(float px, FontStyle style = FontStyle.Regular) =>
+        new(Family, Math.Max(1f, px), style, GraphicsUnit.Pixel);
+
+    /// <summary>A heading or display-numeral font at an already-scaled pixel size.</summary>
+    public static Font CreateDisplay(float px, FontStyle style = FontStyle.Regular) =>
+        new(DisplayFamily, Math.Max(1f, px), style, GraphicsUnit.Pixel);
+
+    public static Font CreateMono(float px, FontStyle style = FontStyle.Regular) =>
+        new(MonoFamily, Math.Max(1f, px), style, GraphicsUnit.Pixel);
+
+    /// <summary>
+    /// The height one line of text at <paramref name="px"/> needs, for sizing the box
+    /// around it. Everything that holds text is at least this tall, so a larger text
+    /// setting grows the box instead of cutting off the bottom of the letters.
+    /// </summary>
+    public static int LineHeight(float px, FontStyle style = FontStyle.Regular)
+    {
+        // Asked for on every resize, with a handful of distinct sizes per session, so
+        // it is worth not creating a GDI font each time.
+        var key = ((int)Math.Round(px * 10), style);
+        if (!LineHeights.TryGetValue(key, out int height))
+        {
+            using var font = Create(px, style);
+            height = font.Height;
+            LineHeights[key] = height;
+        }
+        return height;
+    }
+
+    private static readonly Dictionary<(int, FontStyle), int> LineHeights = new();
+
+    private static string Resolve(string preferred, string fallback)
+    {
+        try
+        {
+            using var probe = new Font(preferred, 12f, FontStyle.Regular, GraphicsUnit.Pixel);
+            return probe.Name.Equals(preferred, StringComparison.OrdinalIgnoreCase) ? preferred : fallback;
+        }
+        catch (ArgumentException)
+        {
+            return fallback;
+        }
+    }
 }
 
 internal static class UiTheme
@@ -71,11 +237,13 @@ internal static class UiTheme
     public static readonly Color Danger = Color.FromArgb(232, 131, 117);
     public static readonly Color Ok = Color.FromArgb(139, 213, 160);
 
-    /// <param name="dpiScale">Scales the button's geometry.</param>
+    /// <param name="textScale">Scales the button's default height. A button holds a
+    /// label, so it is the text scale — display scale times Windows' Text size — and
+    /// not the display scale alone.</param>
     /// <param name="fontPx">The font size to assign — from
-    /// <see cref="UiScaling.ControlFontPx"/>, not from dpiScale, because WinForms
+    /// <see cref="UiScaling.ControlFontPx"/>, not from textScale, because WinForms
     /// adjusts a control's font behind our back and its geometry not at all.</param>
-    public static Button MakeButton(string text, bool primary, float dpiScale, float fontPx)
+    public static Button MakeButton(string text, bool primary, float textScale, float fontPx)
     {
         var btn = new Button
         {
@@ -84,9 +252,9 @@ internal static class UiTheme
             BackColor = primary ? Gold : Card,
             ForeColor = primary ? Ink : Text,
             FlatStyle = FlatStyle.Flat,
-            Font = new Font("Segoe UI", fontPx, primary ? FontStyle.Bold : FontStyle.Regular, GraphicsUnit.Pixel),
+            Font = UiType.Create(fontPx, primary ? FontStyle.Bold : FontStyle.Regular),
             Cursor = Cursors.Hand,
-            Height = (int)Math.Round(36 * dpiScale)
+            Height = (int)Math.Round(36 * textScale)
         };
         btn.FlatAppearance.BorderSize = primary ? 0 : 1;
         btn.FlatAppearance.BorderColor = Line;
@@ -103,7 +271,7 @@ internal static class UiTheme
     {
         Text = text,
         ForeColor = Muted,
-        Font = new Font("Segoe UI", fontPx, FontStyle.Bold, GraphicsUnit.Pixel),
+        Font = UiType.Create(fontPx, FontStyle.Bold),
         AutoSize = false,
         TextAlign = ContentAlignment.MiddleLeft
     };

@@ -78,6 +78,25 @@ internal static class Program
         }
     }
 
+    /// <summary>
+    /// Pulls <c>--text-scale &lt;percent&gt;</c> out of the arguments, wherever it is,
+    /// and applies it in place of Windows' Text size setting. Combined with the
+    /// --screenshot switches, it is how each text size gets checked without changing
+    /// the setting for everything else on the machine.
+    /// </summary>
+    private static string[] TakeTextScaleOverride(string[] args)
+    {
+        int at = Array.FindIndex(args, a => a.Equals("--text-scale", StringComparison.OrdinalIgnoreCase));
+        if (at < 0) return args;
+
+        if (at + 1 < args.Length && int.TryParse(args[at + 1], out int percent))
+        {
+            UiScaling.TextScaleOverride = percent / 100f;
+            return args.Where((_, i) => i != at && i != at + 1).ToArray();
+        }
+        return args.Where((_, i) => i != at).ToArray();
+    }
+
     [STAThread]
     private static void Main(string[] args)
     {
@@ -91,6 +110,8 @@ internal static class Program
 
         // Every path below reads or writes settings, so resolve their location first.
         AppPaths.Initialise();
+
+        args = TakeTextScaleOverride(args);
 
         if (args.Length > 0 && args[0].Equals("--preflight", StringComparison.OrdinalIgnoreCase))
         {

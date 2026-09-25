@@ -191,14 +191,7 @@ public class TrayContext : ApplicationContext
     /// taskbar can sit on a display with a different scale factor than the one the
     /// app started on.
     /// </summary>
-    private static float TrayScale()
-    {
-        var screen = Screen.FromPoint(Cursor.Position);
-        using var g = Graphics.FromHwnd(IntPtr.Zero);
-        float dpi = g.DpiX <= 0 ? 96f : g.DpiX;
-        _ = screen;
-        return dpi / 96f;
-    }
+    private static float TrayScale() => UiScaling.DpiScaleAt(Cursor.Position);
 
     /// <summary>
     /// Re-registers global hotkeys. Split out from the menu rebuild because it needs
