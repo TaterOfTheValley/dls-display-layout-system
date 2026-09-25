@@ -5,19 +5,29 @@ namespace DLS;
 public class TrayContext : ApplicationContext
 {
     private readonly NotifyIcon _notifyIcon;
+    private readonly Control _uiDispatcher = new();
     private List<TrayPopup.Entry> _entries = new();
     private readonly HotkeyManager _hotkeyManager;
     private readonly FileSystemWatcher _profileWatcher;
     private readonly System.Windows.Forms.Timer _profileReloadTimer;
+    private readonly System.Windows.Forms.Timer _hotkeyRecoveryTimer;
     private List<DisplayProfile> _profiles;
     private DisplayProfile? _activeProfile;
     private ConfigForm? _configForm;
     private bool _profileChangePending;
     private string _lastHandledProfileSignature = string.Empty;
     private bool _reloadingProfiles;
+    private int _hotkeyRecoveryAttempt;
+
+    private const int MaxHotkeyRecoveryAttempts = 3;
 
     public TrayContext()
     {
+        // Keep a UI-thread handle alive even after the editor is closed. SystemEvents
+        // callbacks arrive off-thread, and must be marshalled before touching the
+        // tray context or its hotkey registrations.
+        _ = _uiDispatcher.Handle;
+
         _profiles = ProfileManager.LoadProfiles();
         _hotkeyManager = new HotkeyManager();
 
@@ -61,6 +71,9 @@ public class TrayContext : ApplicationContext
         };
         _profileReloadTimer.Start();
 
+        _hotkeyRecoveryTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+        _hotkeyRecoveryTimer.Tick += (_, _) => TryRecoverHotkeys();
+
         RefreshMenuAndHotkeys();
         DetectActiveProfile();
 
@@ -68,6 +81,8 @@ public class TrayContext : ApplicationContext
         // a monitor plugged or unplugged, a driver event. Without this the tray shows
         // a checkmark against a profile that is no longer live.
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+        Microsoft.Win32.SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        Microsoft.Win32.SystemEvents.SessionSwitch += OnSessionSwitch;
 
         // Anything the settings load wants the user to know — an upgraded file format,
         // or a file written by a newer build that was backed up before use.
@@ -85,9 +100,15 @@ public class TrayContext : ApplicationContext
 
     private void BeginInvokeOnUi(Action action)
     {
-        var form = _configForm;
-        if (form != null && form.IsHandleCreated && !form.IsDisposed) form.BeginInvoke(action);
-        else action();
+        if (_uiDispatcher.IsDisposed) return;
+        if (!_uiDispatcher.InvokeRequired)
+        {
+            action();
+            return;
+        }
+
+        try { _uiDispatcher.BeginInvoke(action); }
+        catch (InvalidOperationException) { }
     }
 
     private void ProfileFileChanged(object? sender, FileSystemEventArgs e)
@@ -169,20 +190,76 @@ public class TrayContext : ApplicationContext
     /// through the full menu rebuild meant enumerating every display path each time
     /// the user paused typing.
     /// </summary>
-    private void RegisterHotkeys()
+    private bool RegisterHotkeys()
     {
         _hotkeyManager.UnregisterAll();
+        bool allRegistered = true;
         foreach (var profile in _profiles)
         {
             var p = profile;
             if (p.NeedsRecapture || string.IsNullOrWhiteSpace(p.Hotkey)) continue;
-            _hotkeyManager.Register(p.Hotkey, () => SwitchToProfile(p));
+            if (!_hotkeyManager.Register(p.Hotkey, () => SwitchToProfile(p)))
+                allRegistered = false;
+        }
+        return allRegistered;
+    }
+
+    private void RefreshHotkeys()
+    {
+        if (RegisterHotkeys())
+        {
+            _hotkeyRecoveryTimer.Stop();
+            _hotkeyRecoveryAttempt = 0;
+        }
+        else
+        {
+            ScheduleHotkeyRecovery();
+        }
+    }
+
+    private void ScheduleHotkeyRecovery()
+    {
+        _hotkeyRecoveryAttempt = 0;
+        _hotkeyRecoveryTimer.Stop();
+        _hotkeyRecoveryTimer.Interval = 1000;
+        _hotkeyRecoveryTimer.Start();
+    }
+
+    private void TryRecoverHotkeys()
+    {
+        _hotkeyRecoveryTimer.Stop();
+        if (RegisterHotkeys())
+        {
+            _hotkeyRecoveryAttempt = 0;
+            return;
+        }
+
+        _hotkeyRecoveryAttempt++;
+        if (_hotkeyRecoveryAttempt >= MaxHotkeyRecoveryAttempts) return;
+
+        _hotkeyRecoveryTimer.Interval = _hotkeyRecoveryAttempt == 1 ? 1500 : 4000;
+        _hotkeyRecoveryTimer.Start();
+    }
+
+    private void OnPowerModeChanged(object? sender, Microsoft.Win32.PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == Microsoft.Win32.PowerModes.Resume)
+            BeginInvokeOnUi(ScheduleHotkeyRecovery);
+    }
+
+    private void OnSessionSwitch(object? sender, Microsoft.Win32.SessionSwitchEventArgs e)
+    {
+        if (e.Reason is Microsoft.Win32.SessionSwitchReason.SessionUnlock
+            or Microsoft.Win32.SessionSwitchReason.ConsoleConnect
+            or Microsoft.Win32.SessionSwitchReason.RemoteConnect)
+        {
+            BeginInvokeOnUi(ScheduleHotkeyRecovery);
         }
     }
 
     private void RefreshMenuAndHotkeys()
     {
-        RegisterHotkeys();
+        RefreshHotkeys();
 
         var entries = new List<TrayPopup.Entry>();
 
@@ -382,7 +459,7 @@ public class TrayContext : ApplicationContext
             // edit immediately, but the menu is rebuilt when it opens anyway.
             _configForm = new ConfigForm(_profiles, () =>
             {
-                RegisterHotkeys();
+                RefreshHotkeys();
                 MarkProfileFileHandled();
             });
         }
@@ -407,13 +484,18 @@ public class TrayContext : ApplicationContext
         // SystemEvents holds a static, process-lifetime subscriber list; leaving this
         // attached keeps the whole TrayContext alive after exit.
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+        Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+        Microsoft.Win32.SystemEvents.SessionSwitch -= OnSessionSwitch;
 
         _profileReloadTimer.Stop();
         _profileReloadTimer.Dispose();
+        _hotkeyRecoveryTimer.Stop();
+        _hotkeyRecoveryTimer.Dispose();
         _profileWatcher.Dispose();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
         _hotkeyManager.Dispose();
+        _uiDispatcher.Dispose();
         base.ExitThreadCore();
     }
 
