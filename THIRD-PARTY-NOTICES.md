@@ -24,6 +24,7 @@ already installed, so it redistributes nothing from this table.
 | Component | Package | License |
 |---|---|---|
 | System.Text.Json | `System.Text.Json` 8.0.5 | MIT |
+| Velopack updater and installer | `Velopack` 1.2.0 | MIT |
 
 ## MIT License
 
@@ -31,6 +32,7 @@ All components above are:
 
 > Copyright (c) .NET Foundation and Contributors
 > © Microsoft Corporation. All rights reserved.
+> Copyright © Velopack Ltd. All rights reserved.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this
 software and associated documentation files (the "Software"), to deal in the Software

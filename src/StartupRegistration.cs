@@ -93,6 +93,21 @@ internal static class StartupRegistration
         }
     }
 
+    /// <summary>Removes the launch entry during uninstall, retaining the user's
+    /// preference if they later reinstall.</summary>
+    public static void RemoveForUninstall()
+    {
+        try
+        {
+            using var run = Registry.CurrentUser.OpenSubKey(RunKey, writable: true);
+            run?.DeleteValue(AppInfo.StartupValueName, throwOnMissingValue: false);
+        }
+        catch
+        {
+            // Uninstall still proceeds if a policy has locked this registry key.
+        }
+    }
+
     private const string SettingsKey = @"Software\DLS";
     private const string IntentValue = "StartWithWindows";
 

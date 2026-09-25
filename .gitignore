@@ -6,6 +6,9 @@ obj/
 # version tag and attached to the GitHub release, so a binary in the repo would only
 # ever be a stale copy of one.
 dist/
+ci-publish/
+ci-pack/
+ci-tools/
 
 # Local profile data. Machine-specific: it holds this PC's monitor device paths.
 profiles.json
