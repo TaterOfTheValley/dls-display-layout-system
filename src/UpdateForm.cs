@@ -1,3 +1,5 @@
+using System.Text;
+using System.Text.RegularExpressions;
 using Velopack;
 
 namespace DLS;
@@ -9,10 +11,14 @@ internal sealed class UpdateForm : Form
     private readonly UpdateInfo _update;
     private readonly Func<VelopackAsset, bool> _apply;
     private readonly Button _installButton;
-    private readonly ProgressBar _progress;
+    private readonly ProgressStrip _progress;
     private readonly Label _status;
     private readonly CancellationTokenSource _closing = new();
     private bool _downloaded;
+
+    /// <summary>Converts a size on the app's pixel ramp to the point size this dialog
+    /// uses, with Windows' Text size setting applied.</summary>
+    private static float Pt(float designPx) => designPx * 0.75f * UiScaling.TextScale;
 
     public UpdateForm(UpdateManager manager, UpdateInfo update, Func<VelopackAsset, bool> apply)
     {
@@ -20,17 +26,21 @@ internal sealed class UpdateForm : Form
         _update = update;
         _apply = apply;
 
-        // Unlike every other window in DLS, this one is laid out by WinForms rather
-        // than by hand: it is a plain dialog, and letting AutoScaleMode.Dpi plus
-        // auto-sizing panels do the work keeps it right at any display scale. The font
-        // is in points for the same reason — a point size is already DPI-relative, so
-        // the text follows the monitor, and the panels follow the text. Windows' Text
-        // size setting is the one thing WinForms does not know about, so that is
-        // applied here, to the font, and the layout grows around it.
+        // Unlike the other windows in DLS, this one is laid out by WinForms rather than
+        // by hand: it is a plain dialog, and letting AutoScaleMode.Dpi plus auto-sizing
+        // panels do the work keeps it right at any display scale. The fonts are in
+        // points for the same reason — a point size is already DPI-relative, so the text
+        // follows the monitor, and the panels follow the text. Windows' Text size
+        // setting is the one thing WinForms does not know about, so that is applied
+        // here, to the fonts, and the layout grows around it. It still looks like the
+        // rest of the app: same colours, same buttons, same type ramp.
         SuspendLayout();
         AutoScaleDimensions = new SizeF(96F, 96F);
         AutoScaleMode = AutoScaleMode.Dpi;
-        Font = new Font(UiType.Family, 9f * UiScaling.TextScale, FontStyle.Regular, GraphicsUnit.Point);
+        Font = new Font(UiType.Family, Pt(UiType.Body), FontStyle.Regular, GraphicsUnit.Point);
+        BackColor = UiTheme.Bg;
+        ForeColor = UiTheme.Text;
+        UiTheme.UseDarkTitleBar(this);
 
         Text = $"Update {AppInfo.Name}";
         Icon = AppIcon.Shared;
@@ -39,14 +49,31 @@ internal sealed class UpdateForm : Form
         MaximizeBox = false;
         MinimizeBox = false;
         float grow = 1f + (UiScaling.TextScale - 1f) / 2f;
-        ClientSize = new Size((int)Math.Round(500 * grow), (int)Math.Round(345 * grow));
+        ClientSize = new Size((int)Math.Round(520 * grow), (int)Math.Round(380 * grow));
 
         var title = new Label
         {
-            Text = $"DLS {update.TargetFullRelease.Version} is available",
-            Font = new Font(Font, FontStyle.Bold),
+            Text = $"{AppInfo.Name} {update.TargetFullRelease.Version} is available",
+            Font = new Font(UiType.DisplayFamily, Pt(UiType.Subtitle), FontStyle.Bold, GraphicsUnit.Point),
             AutoSize = true,
-            Margin = new Padding(0, 0, 0, 10)
+            Margin = new Padding(0, 0, 0, 2)
+        };
+
+        var current = new Label
+        {
+            Text = $"You have {AppInfo.Version}.",
+            ForeColor = UiTheme.Muted,
+            AutoSize = true,
+            Margin = new Padding(0, 0, 0, 12)
+        };
+
+        var notesHeading = new Label
+        {
+            Text = "WHAT'S NEW",
+            ForeColor = UiTheme.Muted,
+            Font = new Font(UiType.Family, Pt(UiType.Caption), FontStyle.Bold, GraphicsUnit.Point),
+            AutoSize = true,
+            Margin = new Padding(0, 0, 0, 6)
         };
 
         var notes = new TextBox
@@ -54,36 +81,56 @@ internal sealed class UpdateForm : Form
             ReadOnly = true,
             Multiline = true,
             ScrollBars = ScrollBars.Vertical,
-            // A multi-line TextBox only breaks lines at CRLF; release notes arrive
-            // with bare LFs and otherwise show as one run-on paragraph.
-            Text = string.IsNullOrWhiteSpace(update.TargetFullRelease.NotesMarkdown)
-                ? "A new version is ready to install."
-                : update.TargetFullRelease.NotesMarkdown.ReplaceLineEndings("\r\n"),
+            BorderStyle = BorderStyle.None,
+            BackColor = UiTheme.Card,
+            ForeColor = UiTheme.Text,
+            Text = FormatNotes(update.TargetFullRelease.NotesMarkdown),
             Dock = DockStyle.Fill,
-            Margin = new Padding(0, 0, 0, 10)
+            Margin = new Padding(0)
         };
+        UiTheme.UseDarkScrollBars(notes);
+
+        // The notes sit in a card with the app's hairline border. A TextBox cannot pad
+        // its own text or colour its own border, so the card does both.
+        var notesCard = new Panel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = UiTheme.Card,
+            Padding = new Padding(12, 10, 4, 10),
+            Margin = new Padding(0, 0, 0, 12)
+        };
+        notesCard.Paint += (_, e) =>
+        {
+            using var pen = new Pen(UiTheme.Line);
+            e.Graphics.DrawRectangle(pen, 0, 0, notesCard.Width - 1, notesCard.Height - 1);
+        };
+        notesCard.Controls.Add(notes);
 
         _status = new Label
         {
             Text = "Ready to download",
+            ForeColor = UiTheme.Muted,
             AutoSize = true,
             Margin = new Padding(0, 0, 0, 6)
         };
 
-        _progress = new ProgressBar
+        _progress = new ProgressStrip
         {
             Anchor = AnchorStyles.Left | AnchorStyles.Right,
-            Margin = new Padding(0, 0, 12, 0)
+            Height = 6,
+            Margin = new Padding(0, 0, 16, 0)
         };
 
         _installButton = new Button
         {
             Text = "Install and restart",
+            Font = new Font(UiType.Family, Pt(UiType.Body), FontStyle.Bold, GraphicsUnit.Point),
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            Padding = new Padding(10, 2, 10, 2),
-            Margin = new Padding(0, 0, 6, 0)
+            Padding = new Padding(14, 6, 14, 6),
+            Margin = new Padding(0, 0, 8, 0)
         };
+        UiTheme.StyleButton(_installButton, primary: true);
         _installButton.Click += InstallClicked;
 
         var laterButton = new Button
@@ -91,10 +138,11 @@ internal sealed class UpdateForm : Form
             Text = "Later",
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            Padding = new Padding(10, 2, 10, 2),
+            Padding = new Padding(14, 6, 14, 6),
             Margin = new Padding(0),
-            MinimumSize = new Size(75, 0)
+            MinimumSize = new Size(88, 0)
         };
+        UiTheme.StyleButton(laterButton, primary: false);
         laterButton.Click += (_, _) => Close();
 
         // Progress takes whatever the buttons leave; the buttons take what their
@@ -118,18 +166,22 @@ internal sealed class UpdateForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4,
-            Padding = new Padding(16)
+            RowCount = 6,
+            Padding = new Padding(20, 18, 20, 18)
         };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.Controls.Add(title, 0, 0);
-        root.Controls.Add(notes, 0, 1);
-        root.Controls.Add(_status, 0, 2);
-        root.Controls.Add(actions, 0, 3);
+        root.Controls.Add(current, 0, 1);
+        root.Controls.Add(notesHeading, 0, 2);
+        root.Controls.Add(notesCard, 0, 3);
+        root.Controls.Add(_status, 0, 4);
+        root.Controls.Add(actions, 0, 5);
         Controls.Add(root);
         ResumeLayout(performLayout: true);
 
@@ -138,6 +190,62 @@ internal sealed class UpdateForm : Form
         AcceptButton = _installButton;
         CancelButton = laterButton;
         FormClosing += (_, _) => _closing.Cancel();
+    }
+
+    /// <summary>
+    /// Turns the release notes' markdown into plain text worth reading in a text box:
+    /// no <c>#</c> or <c>**</c> markers, bullets as bullets, and paragraphs re-flowed.
+    /// The notes are written hard-wrapped at 90 columns; shown verbatim, those line
+    /// breaks land mid-sentence at any other width.
+    /// </summary>
+    internal static string FormatNotes(string? markdown)
+    {
+        if (string.IsNullOrWhiteSpace(markdown)) return "A new version is ready to install.";
+
+        var output = new StringBuilder();
+        var paragraph = new StringBuilder();
+
+        void Flush()
+        {
+            if (paragraph.Length == 0) return;
+            if (output.Length > 0) output.Append("\r\n\r\n");
+            output.Append(paragraph);
+            paragraph.Clear();
+        }
+
+        foreach (string raw in markdown.ReplaceLineEndings("\n").Split('\n'))
+        {
+            string line = raw.Trim();
+            if (line.Length == 0)
+            {
+                Flush();
+                continue;
+            }
+
+            line = Regex.Replace(line, @"\*\*(.+?)\*\*|__(.+?)__", "$1$2");
+            line = Regex.Replace(line, "`([^`]*)`", "$1");
+
+            if (line.StartsWith('#'))
+            {
+                Flush();
+                paragraph.Append(line.TrimStart('#').Trim());
+                Flush();
+            }
+            else if (Regex.IsMatch(line, @"^([-*+]|\d+\.)\s"))
+            {
+                // Each bullet starts its own line; a wrapped bullet's continuation
+                // lines join onto it like any other paragraph text.
+                if (paragraph.Length > 0) paragraph.Append("\r\n");
+                paragraph.Append("•  ").Append(Regex.Replace(line, @"^([-*+]|\d+\.)\s+", ""));
+            }
+            else
+            {
+                if (paragraph.Length > 0) paragraph.Append(' ');
+                paragraph.Append(line);
+            }
+        }
+        Flush();
+        return output.ToString();
     }
 
     private async void InstallClicked(object? sender, EventArgs e)
@@ -184,6 +292,45 @@ internal sealed class UpdateForm : Form
             _installButton.Enabled = true;
             MessageBox.Show(this, ex.Message, "DLS update failed", MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
+        }
+    }
+
+    /// <summary>
+    /// A slim gold progress bar. The stock ProgressBar draws the system's green bar in
+    /// a light well, and ignores its colours whenever visual styles are on.
+    /// </summary>
+    private sealed class ProgressStrip : Control
+    {
+        private int _value;
+
+        public ProgressStrip()
+        {
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint |
+                     ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+            SetStyle(ControlStyles.Selectable, false);
+        }
+
+        /// <summary>Percent complete, 0–100.</summary>
+        public int Value
+        {
+            get => _value;
+            set
+            {
+                int clamped = Math.Clamp(value, 0, 100);
+                if (clamped == _value) return;
+                _value = clamped;
+                Invalidate();
+            }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            using var track = new SolidBrush(UiTheme.Card);
+            e.Graphics.FillRectangle(track, ClientRectangle);
+            int filled = (int)Math.Round(Width * _value / 100f);
+            if (filled <= 0) return;
+            using var fill = new SolidBrush(UiTheme.Gold);
+            e.Graphics.FillRectangle(fill, 0, 0, filled, Height);
         }
     }
 }

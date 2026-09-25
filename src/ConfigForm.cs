@@ -43,6 +43,7 @@ public class ConfigForm : Form
     private Panel _undoPanel = null!;
     private Label _undoLabel = null!;
     private Label _feedbackLabel = null!;
+    private Label _versionLabel = null!;
     private Label _statusLabel = null!;
     private string _statusTip = string.Empty;
     private Label _hotkeyHint = null!;
@@ -231,6 +232,7 @@ public class ConfigForm : Form
         KeyPreview = true;
         Text = AppInfo.Name;
         Icon = AppIcon.Shared;
+        UiTheme.UseDarkTitleBar(this);
         Padding = new Padding(0);
 
         _uiScale = ComputeUiScale(AvailableWorkArea());
@@ -1136,6 +1138,20 @@ public class ConfigForm : Form
             TextAlign = ContentAlignment.MiddleLeft
         };
 
+        // Which build this is, for bug reports and for knowing whether an update took.
+        // It holds the footer's otherwise empty left end and steps aside whenever the
+        // feedback line has something to say there.
+        _versionLabel = new Label
+        {
+            ForeColor = UiTheme.GoldDim,
+            Font = UiType.Create(F(UiType.Caption)),
+            Text = $"{AppInfo.Name} {AppInfo.Version}",
+            AutoSize = false,
+            AutoEllipsis = true,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        _feedbackLabel.TextChanged += (_, _) => UpdateFooterStart();
+
         // Reading of the selected layout against the desktop as it is now. With
         // autosave there is no unsaved state to warn about any more, so the question
         // that matters before pressing Apply is no longer "have I saved this?" but
@@ -1184,15 +1200,31 @@ public class ConfigForm : Form
             // where Apply is — is the one worth keeping.
             int feedbackW = _statusLabel.Left - S(36);
             _feedbackLabel.SetBounds(S(24), 0, Math.Max(S(20), feedbackW), footer.Height);
-            _feedbackLabel.Visible = feedbackW >= T(80);
+            _versionLabel.Bounds = _feedbackLabel.Bounds;
+            UpdateFooterStart();
         };
 
+        footer.Controls.Add(_versionLabel);
         footer.Controls.Add(_feedbackLabel);
         footer.Controls.Add(_statusLabel);
         footer.Controls.Add(_cancelBtn);
         footer.Controls.Add(_applyBtn);
         _footer = footer;
         return footer;
+    }
+
+    /// <summary>
+    /// The footer's left end holds the feedback line when there is feedback, and the
+    /// version when there is not — and neither on a footer too narrow for them. Only
+    /// one is ever visible, so which one wins does not depend on how the two overlap.
+    /// </summary>
+    private void UpdateFooterStart()
+    {
+        if (_versionLabel == null) return;
+        bool room = _feedbackLabel.Width >= T(80);
+        bool feedback = !string.IsNullOrEmpty(_feedbackLabel.Text);
+        _feedbackLabel.Visible = room && feedback;
+        _versionLabel.Visible = room && !feedback;
     }
 
     private Control BuildUndoBar()

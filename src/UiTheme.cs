@@ -245,14 +245,25 @@ internal static class UiTheme
         var btn = new Button
         {
             Text = text,
-            UseMnemonic = false,
-            BackColor = primary ? Gold : Card,
-            ForeColor = primary ? Ink : Text,
-            FlatStyle = FlatStyle.Flat,
             Font = UiType.Create(fontPx, primary ? FontStyle.Bold : FontStyle.Regular),
-            Cursor = Cursors.Hand,
             Height = (int)Math.Round(36 * textScale)
         };
+        StyleButton(btn, primary);
+        return btn;
+    }
+
+    /// <summary>
+    /// The app's button look — gold for the one primary action, a bordered card for
+    /// the rest — applied to a button whose font and size are someone else's business.
+    /// Split from <see cref="MakeButton"/> for the dialogs WinForms lays out itself.
+    /// </summary>
+    public static void StyleButton(Button btn, bool primary)
+    {
+        btn.UseMnemonic = false;
+        btn.BackColor = primary ? Gold : Card;
+        btn.ForeColor = primary ? Ink : Text;
+        btn.FlatStyle = FlatStyle.Flat;
+        btn.Cursor = Cursors.Hand;
         btn.FlatAppearance.BorderSize = primary ? 0 : 1;
         btn.FlatAppearance.BorderColor = Line;
         btn.FlatAppearance.MouseOverBackColor = primary ? GoldHover : CardHover;
@@ -261,7 +272,42 @@ internal static class UiTheme
             btn.BackColor = btn.Enabled ? (primary ? Gold : Card) : Card;
             btn.ForeColor = btn.Enabled ? (primary ? Ink : Text) : Muted;
         };
-        return btn;
+    }
+
+    [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+    [System.Runtime.InteropServices.DllImport("uxtheme.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern int SetWindowTheme(IntPtr hwnd, string? appName, string? idList);
+
+    private const int DwmUseImmersiveDarkMode = 20;
+
+    /// <summary>
+    /// Gives a window a dark title bar, so the frame matches the dark window inside it
+    /// rather than sitting on it as a white strip. If the user has accent colours on
+    /// title bars, Windows still draws those — this only changes the default.
+    /// Harmless where unsupported: before Windows 10 20H1 the call just fails.
+    /// </summary>
+    public static void UseDarkTitleBar(Form form)
+    {
+        void Apply()
+        {
+            int on = 1;
+            DwmSetWindowAttribute(form.Handle, DwmUseImmersiveDarkMode, ref on, sizeof(int));
+        }
+
+        if (form.IsHandleCreated) Apply();
+        form.HandleCreated += (_, _) => Apply();
+    }
+
+    /// <summary>Dark scroll bars for a control that has its own, such as a multi-line
+    /// TextBox, which would otherwise draw light ones inside a dark window.</summary>
+    public static void UseDarkScrollBars(Control control)
+    {
+        void Apply() => SetWindowTheme(control.Handle, "DarkMode_Explorer", null);
+
+        if (control.IsHandleCreated) Apply();
+        control.HandleCreated += (_, _) => Apply();
     }
 
     public static Label MakeEyebrow(string text, float fontPx) => new()
