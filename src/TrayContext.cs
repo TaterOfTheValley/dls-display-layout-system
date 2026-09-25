@@ -40,7 +40,7 @@ public class TrayContext : ApplicationContext
         _notifyIcon = new NotifyIcon
         {
             Icon = AppIcon.Shared,
-            Text = AppInfo.Name,
+            Text = $"{AppInfo.Name} {AppInfo.Version}",
             Visible = true
         };
 
@@ -354,7 +354,9 @@ public class TrayContext : ApplicationContext
         entries.Add(new TrayPopup.CommandEntry
         {
             Text = "Check for updates\u2026",
-            Detail = _checkingUpdates ? "checking" : null,
+            // The installed version, right where the question "am I up to date?" is
+            // asked — the one place in the menu someone looking for it will look.
+            Detail = _checkingUpdates ? "checking" : AppInfo.Version,
             Enabled = !_checkingUpdates,
             Invoke = () => _ = CheckForUpdatesAsync(manual: true)
         });
@@ -501,7 +503,7 @@ public class TrayContext : ApplicationContext
         if (ok)
         {
             DetectActiveProfile();
-            _notifyIcon.Text = AppInfo.Name;
+            _notifyIcon.Text = $"{AppInfo.Name} {AppInfo.Version}";
         }
         else
         {
@@ -548,6 +550,7 @@ public class TrayContext : ApplicationContext
         entries.Add(new TrayPopup.CommandEntry { Text = "Save current arrangement as a layout", Invoke = () => { } });
         entries.Add(new TrayPopup.CommandEntry { Text = "Edit layouts\u2026", Invoke = () => { } });
         entries.Add(new TrayPopup.SeparatorEntry());
+        entries.Add(new TrayPopup.CommandEntry { Text = "Check for updates\u2026", Detail = AppInfo.Version, Invoke = () => { } });
         entries.Add(new TrayPopup.CommandEntry
         {
             Text = "Start with Windows",

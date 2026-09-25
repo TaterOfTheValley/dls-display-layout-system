@@ -314,7 +314,12 @@ internal static class Program
             {
                 PackageId = "DLS",
                 Version = SemanticVersion.Parse("9.9.9"),
-                NotesMarkdown = "## What's new\n\n- Text follows Windows' Text size setting.\n- The update dialog scales with your display."
+                NotesMarkdown = "# DLS update\n\nText now follows **Windows' Text size** setting, and every\n" +
+                                "window scales with your display. Hard-wrapped lines like these are\n" +
+                                "re-flowed so they read as one paragraph.\n\n" +
+                                "- The update dialog matches the rest of the app.\n" +
+                                "- The version is shown in the tray menu and the editor, next to\n" +
+                                "  `Check for updates`.\n"
             };
             var manager = new UpdateManager("https://example.invalid/releases");
             using var form = new UpdateForm(manager, new UpdateInfo(asset, false), _ => false);
