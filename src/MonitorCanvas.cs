@@ -74,8 +74,45 @@ internal sealed class MonitorCanvas : Control
 
     private float _uiScale;
 
+    /// <summary>
+    /// The scale text is drawn at: <see cref="UiScale"/> times Windows' Text size
+    /// setting. Set by the owning form alongside UiScale, for the same reason.
+    /// </summary>
+    public float TextScale
+    {
+        get => _textScale > 0 ? _textScale : UiScale * UiScaling.TextScale;
+        set { _textScale = value; RecalcLayout(); Invalidate(); }
+    }
+
+    private float _textScale;
+
     private float DpiScale => UiScale;
+
+    /// <summary>Windows' Text size setting on its own, for text whose size comes from
+    /// the tile it sits in rather than from the ramp.</summary>
+    private float TextFactor => UiScale > 0.01f ? TextScale / UiScale : 1f;
+
+    /// <summary>Scales a design length. For geometry that holds no text.</summary>
     private int S(int val) => (int)Math.Round(val * DpiScale);
+
+    /// <summary>Scales a design length that holds text, so it grows with the text.</summary>
+    private int T(int val) => (int)Math.Round(val * TextScale);
+
+    /// <summary>Scales a design font size.</summary>
+    private float P(float designPx) => designPx * TextScale;
+
+    /// <summary>A box designed to hold one line at each of <paramref name="lines"/>:
+    /// its display-scaled height plus the extra those lines need at the Text size
+    /// setting. The form has the same helper, and the reasoning is written up there.</summary>
+    private int Hold(int box, params float[] lines)
+    {
+        int height = S(box);
+        foreach (float px in lines)
+        {
+            height += UiType.LineHeight(P(px)) - UiType.LineHeight(px * DpiScale);
+        }
+        return height;
+    }
 
     public MonitorCanvas()
     {
@@ -113,9 +150,15 @@ internal sealed class MonitorCanvas : Control
     /// unused, so the rail's purpose stays visible without permanently spending a fifth
     /// of the canvas on "empty".
     /// </summary>
+    /// <remarks>
+    /// The expanded rail holds labelled chips, so it widens with the text, but only
+    /// halfway, because every pixel it takes comes out of the canvas. The chips
+    /// ellipsize their names past that. The collapsed strip has to fit its caption
+    /// turned on its side, so it is as wide as one line of that caption needs.
+    /// </remarks>
     private int ShelfWidth => ShelfExpanded
-        ? Math.Max(S(96), S(ShelfWidthDesign))
-        : Math.Max(S(40), S(ShelfCollapsedWidthDesign));
+        ? Math.Max(S(96), (int)Math.Round(S(ShelfWidthDesign) * (1f + (TextFactor - 1f) / 2f)))
+        : Math.Max(S(ShelfCollapsedWidthDesign), UiType.LineHeight(P(UiType.Caption), FontStyle.Bold) + S(24));
     private int Pad => Math.Max(S(16), S(18));
 
     /// <summary>
@@ -451,14 +494,17 @@ internal sealed class MonitorCanvas : Control
             DisplayEngine.SameHardwareIdentity(h.MonitorDevicePath, cfg.MonitorDevicePath));
 
 
+    /// <summary>An unused monitor's chip: tall enough for its number and name.</summary>
+    private int ChipHeight => Hold(62, UiType.Body);
+
     private void RecalcLayout()
     {
         if (!_viewFrozen) _view = ComputeView();
 
         int chipW = Math.Max(S(96), ShelfWidth - Pad * 2);
-        int chipH = Math.Max(S(54), S(62));
+        int chipH = ChipHeight;
         int x = Pad;
-        int y = S(ShelfHeaderDesign);
+        int y = T(ShelfHeaderDesign);
 
         foreach (var item in _items)
         {
@@ -565,7 +611,7 @@ internal sealed class MonitorCanvas : Control
 
         if (_items.All(i => !i.Config.Enabled) && _drag == null)
         {
-            using var font = new Font("Segoe UI", 10f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel);
+            using var font = UiType.Create(P(UiType.Body));
             using var muted = new SolidBrush(UiTheme.Muted);
             var text = "Drag a display from the rail to include it in this profile";
             var size = g.MeasureString(text, font);
@@ -638,13 +684,20 @@ internal sealed class MonitorCanvas : Control
 
         // --- Content, as one block centred in the panel. Pinned to the top it looked
         // like a caption that had run out of room; centred it looks placed.
+        // The number is part of the picture and sizes with the tile alone. The name
+        // and read-out are text: they size with the tile too, but the Text size setting
+        // scales them on top, and their floor and ceiling come from the type ramp.
         float numSize = Math.Clamp(r.Height * 0.20f, S(15), S(46));
-        float nameSize = Math.Clamp(r.Height * 0.085f, S(10), S(17));
-        float subSize = Math.Clamp(r.Height * 0.062f, S(9), S(13));
+        float nameSize = Math.Clamp(r.Height * 0.085f * TextFactor, P(UiType.Body), P(UiType.Subtitle));
+        float subSize = Math.Clamp(r.Height * 0.062f * TextFactor, P(UiType.Caption), P(UiType.BodyLarge));
 
-        using var numFont = new Font("Segoe UI", numSize, FontStyle.Bold, GraphicsUnit.Pixel);
-        using var nameFont = new Font("Segoe UI", nameSize, FontStyle.Bold, GraphicsUnit.Pixel);
-        using var subFont = new Font("Segoe UI", subSize, FontStyle.Regular, GraphicsUnit.Pixel);
+        // Never smaller than the name under it, or large text leaves the number
+        // looking like a footnote to the name.
+        numSize = Math.Max(numSize, nameSize * 1.15f);
+
+        using var numFont = UiType.CreateDisplay(numSize, FontStyle.Bold);
+        using var nameFont = UiType.Create(nameSize, FontStyle.Bold);
+        using var subFont = UiType.Create(subSize);
         using var text = new SolidBrush(enabled ? UiTheme.Text : UiTheme.Muted);
         using var muted = new SolidBrush(UiTheme.Muted);
 
@@ -703,7 +756,7 @@ internal sealed class MonitorCanvas : Control
         if (item.Config.IsPrimary && enabled)
         {
             string badge = "MAIN";
-            using var badgeFont = new Font("Segoe UI", 7.5f * DpiScale, FontStyle.Bold, GraphicsUnit.Pixel);
+            using var badgeFont = UiType.Create(P(UiType.Caption) * 0.9f, FontStyle.Bold);
             var bSize = g.MeasureString(badge, badgeFont);
             var br = new RectangleF(r.Right - bSize.Width - S(12), r.Y + S(6), bSize.Width + S(8), bSize.Height + S(2));
             using var badgeBg = new SolidBrush(UiTheme.Gold);
@@ -719,8 +772,9 @@ internal sealed class MonitorCanvas : Control
         if (!item.Present)
         {
             using var warn = new SolidBrush(UiTheme.Muted);
-            using var warnFont = new Font("Segoe UI", 7.5f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel);
-            g.DrawString("Not connected", warnFont, warn, new RectangleF(r.X + S(4), r.Bottom - S(18), r.Width - S(8), S(16)), sf);
+            using var warnFont = UiType.Create(P(UiType.Caption));
+            g.DrawString("Not connected", warnFont, warn,
+                new RectangleF(r.X + S(4), r.Bottom - S(2) - warnFont.Height, r.Width - S(8), warnFont.Height), sf);
         }
     }
 
@@ -776,13 +830,13 @@ internal sealed class MonitorCanvas : Control
 
     private void DrawShelfLabelExpanded(Graphics g, int shelfLeft)
     {
-        using var font = new Font("Segoe UI", 8f * DpiScale, FontStyle.Bold, GraphicsUnit.Pixel);
+        using var font = UiType.Create(P(UiType.Caption), FontStyle.Bold);
         using var brush = new SolidBrush(_overShelf ? UiTheme.Danger : UiTheme.Muted);
-        using var fmt = new StringFormat();
+        using var fmt = new StringFormat { Trimming = StringTrimming.EllipsisWord };
         string label = _overShelf
             ? "DROP TO REMOVE FROM THIS PROFILE"
             : "NOT IN THIS LAYOUT  ·  drag onto the canvas to include";
-        g.DrawString(label, font, brush, new RectangleF(Pad * 0.6f, S(10), shelfLeft - Pad, S(ShelfHeaderDesign) - S(16)), fmt);
+        g.DrawString(label, font, brush, new RectangleF(Pad * 0.6f, S(10), shelfLeft - Pad, T(ShelfHeaderDesign) - S(16)), fmt);
     }
 
     /// <summary>
@@ -794,7 +848,7 @@ internal sealed class MonitorCanvas : Control
     private void DrawShelfLabelCollapsed(Graphics g, int shelfLeft)
     {
         string label = _overShelf ? "DROP TO REMOVE" : "UNUSED DISPLAYS";
-        using var font = new Font("Segoe UI", 8f * DpiScale, FontStyle.Bold, GraphicsUnit.Pixel);
+        using var font = UiType.Create(P(UiType.Caption), FontStyle.Bold);
         using var brush = new SolidBrush(_overShelf ? UiTheme.Danger : UiTheme.Muted);
         using var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
 
@@ -1023,7 +1077,7 @@ internal sealed class MonitorCanvas : Control
         else
         {
             int chipW = Math.Max(S(96), ShelfWidth - Pad * 2);
-            int chipH = Math.Max(S(54), S(62));
+            int chipH = ChipHeight;
             _drag.DrawRect = new Rectangle(mouse.X - chipW / 2, mouse.Y - chipH / 2, chipW, chipH);
             _guides.Clear();
         }
@@ -1218,19 +1272,16 @@ internal sealed class MonitorCanvas : Control
         {
             BackColor = UiTheme.Panel,
             ForeColor = UiTheme.Text,
-            ShowImageMargin = false
+            ShowImageMargin = false,
+            Font = UiType.Create(UiScaling.ControlFontPx(UiType.Body, TextScale, DeviceDpi))
         };
         var primary = new ToolStripMenuItem(item.Config.IsPrimary ? "Main display" : "Set as main display")
         {
-            Enabled = !item.Config.IsPrimary,
-            Font = new Font("Segoe UI", 9.5f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel)
+            Enabled = !item.Config.IsPrimary
         };
         primary.Click += (_, _) => SetPrimary(item.Config);
 
-        var toggle = new ToolStripMenuItem(item.Config.Enabled ? "Remove from this profile" : "Include in this profile")
-        {
-            Font = new Font("Segoe UI", 9.5f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel)
-        };
+        var toggle = new ToolStripMenuItem(item.Config.Enabled ? "Remove from this profile" : "Include in this profile");
         toggle.Click += (_, _) =>
         {
             if (item.Config.Enabled) DisableItem(item);
@@ -1238,10 +1289,7 @@ internal sealed class MonitorCanvas : Control
             SelectionChanged?.Invoke(this, EventArgs.Empty);
         };
 
-        var identify = new ToolStripMenuItem("Identify on screen")
-        {
-            Font = new Font("Segoe UI", 9.5f * DpiScale, FontStyle.Regular, GraphicsUnit.Pixel)
-        };
+        var identify = new ToolStripMenuItem("Identify on screen");
         identify.Click += (_, _) => IdentifyOverlays.Show(item.Config.DeviceName);
 
         menu.Items.Add(primary);
@@ -1312,12 +1360,17 @@ internal static class IdentifyOverlays
         private readonly int _number;
         private readonly string _caption;
         private readonly float _dpiScale;
+        private readonly float _textScale;
 
         public IdentifyForm(int number, DisplayInfo display)
         {
             _number = number;
             _caption = string.IsNullOrWhiteSpace(display.MonitorId) ? display.DeviceName : display.MonitorId;
-            _dpiScale = display.Width >= 3840 ? 2.0f : (display.Width >= 2560 ? 1.5f : 1.0f);
+
+            // The scale of the monitor this appears on, which is rarely the one the
+            // editor is on: the point of Identify is to look at the other screens.
+            _dpiScale = UiScaling.DpiScaleAt(new Point(display.X + display.Width / 2, display.Y + display.Height / 2));
+            _textScale = _dpiScale * UiScaling.TextScale;
 
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
@@ -1325,13 +1378,18 @@ internal static class IdentifyOverlays
             TopMost = true;
             BackColor = UiTheme.Bg;
             Opacity = 0.94;
-            int size = (int)Math.Round(180 * _dpiScale);
+            int size = (int)Math.Round(180 * _dpiScale + CaptionHeight - 28 * _dpiScale);
             Bounds = new Rectangle(
                 display.X + (display.Width - size) / 2,
                 display.Y + (display.Height - size) / 2,
                 size, size);
             DoubleBuffered = true;
         }
+
+        /// <summary>Room for the monitor name under the number: one line of caption
+        /// text, however large the Text size setting makes it.</summary>
+        private int CaptionHeight => Math.Max((int)Math.Round(28 * _dpiScale),
+            UiType.LineHeight(UiType.BodyLarge * _textScale, FontStyle.Bold) + (int)Math.Round(4 * _dpiScale));
 
         protected override bool ShowWithoutActivation => true;
 
@@ -1347,13 +1405,19 @@ internal static class IdentifyOverlays
             g.FillRoundedRectangle(fill, pad, pad, Width - pad * 2, Height - pad * 2, radius);
             g.DrawRoundedRectangle(pen, pad, pad, Width - pad * 2 - 1, Height - pad * 2 - 1, radius);
 
-            using var numFont = new Font("Segoe UI", 48f * _dpiScale, FontStyle.Bold, GraphicsUnit.Pixel);
-            using var capFont = new Font("Segoe UI", 11f * _dpiScale, FontStyle.Bold, GraphicsUnit.Pixel);
+            using var numFont = UiType.CreateDisplay(48f * _dpiScale, FontStyle.Bold);
+            using var capFont = UiType.Create(UiType.BodyLarge * _textScale, FontStyle.Bold);
             using var gold = new SolidBrush(UiTheme.Gold);
             using var text = new SolidBrush(UiTheme.Text);
-            var sf = new StringFormat { Alignment = StringAlignment.Center };
+            using var sf = new StringFormat
+            {
+                Alignment = StringAlignment.Center,
+                Trimming = StringTrimming.EllipsisCharacter,
+                FormatFlags = StringFormatFlags.NoWrap
+            };
+            int caption = CaptionHeight;
             g.DrawString(_number.ToString(), numFont, gold, new RectangleF(0, pad + (int)(18 * _dpiScale), Width, (int)(75 * _dpiScale)), sf);
-            g.DrawString(_caption, capFont, text, new RectangleF(pad, Height - pad - (int)(32 * _dpiScale), Width - pad * 2, (int)(28 * _dpiScale)), sf);
+            g.DrawString(_caption, capFont, text, new RectangleF(pad * 2, Height - pad - (int)(4 * _dpiScale) - caption, Width - pad * 4, caption), sf);
         }
     }
 }

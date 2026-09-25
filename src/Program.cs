@@ -78,6 +78,25 @@ internal static class Program
         }
     }
 
+    /// <summary>
+    /// Pulls <c>--text-scale &lt;percent&gt;</c> out of the arguments, wherever it is,
+    /// and applies it in place of Windows' Text size setting. Combined with the
+    /// --screenshot switches, it is how each text size gets checked without changing
+    /// the setting for everything else on the machine.
+    /// </summary>
+    private static string[] TakeTextScaleOverride(string[] args)
+    {
+        int at = Array.FindIndex(args, a => a.Equals("--text-scale", StringComparison.OrdinalIgnoreCase));
+        if (at < 0) return args;
+
+        if (at + 1 < args.Length && int.TryParse(args[at + 1], out int percent))
+        {
+            UiScaling.TextScaleOverride = percent / 100f;
+            return args.Where((_, i) => i != at && i != at + 1).ToArray();
+        }
+        return args.Where((_, i) => i != at).ToArray();
+    }
+
     [STAThread]
     private static void Main(string[] args)
     {
@@ -91,6 +110,8 @@ internal static class Program
 
         // Every path below reads or writes settings, so resolve their location first.
         AppPaths.Initialise();
+
+        args = TakeTextScaleOverride(args);
 
         if (args.Length > 0 && args[0].Equals("--preflight", StringComparison.OrdinalIgnoreCase))
         {
@@ -282,6 +303,27 @@ internal static class Program
             string outPath = args.Length > 1 ? args[1] : "tray-menu-preview.png";
             bmp.Save(outPath, System.Drawing.Imaging.ImageFormat.Png);
             Console.WriteLine($"Tray menu preview saved to {outPath} ({popup.Width}x{popup.Height})");
+            return;
+        }
+
+        if (args.Length > 0 && args[0].Equals("--screenshot-update", StringComparison.OrdinalIgnoreCase))
+        {
+            // Renders the update dialog for a made-up release. Nothing is downloaded:
+            // the manager is never asked to do anything before the form is discarded.
+            var asset = new VelopackAsset
+            {
+                PackageId = "DLS",
+                Version = SemanticVersion.Parse("9.9.9"),
+                NotesMarkdown = "## What's new\n\n- Text follows Windows' Text size setting.\n- The update dialog scales with your display."
+            };
+            var manager = new UpdateManager("https://example.invalid/releases");
+            using var form = new UpdateForm(manager, new UpdateInfo(asset, false), _ => false);
+            form.Show();
+            using var bmp = new Bitmap(form.Width, form.Height);
+            form.DrawToBitmap(bmp, new Rectangle(0, 0, form.Width, form.Height));
+            string outPath = args.Length > 1 ? args[1] : "update-preview.png";
+            bmp.Save(outPath, System.Drawing.Imaging.ImageFormat.Png);
+            Console.WriteLine($"Update dialog preview saved to {outPath} ({form.Width}x{form.Height})");
             return;
         }
 

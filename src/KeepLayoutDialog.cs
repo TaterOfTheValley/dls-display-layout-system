@@ -97,13 +97,71 @@ internal sealed class KeepLayoutDialog : Form
         PlaceOnPrimary();
     }
 
-    /// <summary>The overlay's design size at 100% scale.</summary>
-    private const int DesignW = 500, DesignH = 304;
+    /// <summary>The overlay's design size at 100% scale, with text at its normal size.
+    /// Larger text makes it taller and, if the text needs it, wider.</summary>
+    private const int DesignW = 500;
+
+    // Fonts on the shared ramp. The profile name is a heading; the rest is body text,
+    // a step up from the editor's because this is read at a glance from across a desk.
+    private const float NamePx = UiType.Title;
+    private const float CountdownPx = UiType.BodyLarge;
+    private const float ButtonPx = UiType.BodyLarge;
+
+    private const string KeepText = "Keep this layout";
+    private const string RevertText = "Revert now";
+
+    /// <summary>Measured against a fixed-width stand-in, not the live string: the group
+    /// is centred, and measuring the real text would shift everything sideways the
+    /// moment the count drops from two digits to one.</summary>
+    private const string CountdownSample = "Reverting in 00s unless you keep it";
 
     private float _scale;
 
     private float UiScale => _scale > 0 ? _scale : DeviceDpi / 96f;
+    private float TextScale => UiScale * UiScaling.TextScale;
     private int S(int v) => (int)Math.Round(v * UiScale);
+
+    /// <summary>Where each part of the overlay goes, worked out for one scale.</summary>
+    private readonly record struct OverlayLayout(
+        int NameY, int NameH, int CountY, int CountH, int ButtonY, int ButtonH, int RevertW, Size Size);
+
+    private OverlayLayout _layout;
+
+    /// <summary>The countdown ring: its design size, or three-quarters of the line it
+    /// sits beside once larger text would otherwise dwarf it.</summary>
+    private static int RingSize(float scale, float textScale) =>
+        Math.Max((int)Math.Round(20 * scale), UiType.LineHeight(CountdownPx * textScale) * 3 / 4);
+
+    /// <summary>
+    /// Lays the overlay out from the text it holds. The diagram at the top is a picture
+    /// and keeps its size; below it the name, the countdown and the buttons each take
+    /// the height their text needs at the Text size setting, and the overlay is as wide
+    /// as the widest of them. At normal text this is exactly the 500×304 design.
+    /// </summary>
+    private static OverlayLayout Measure(float scale)
+    {
+        float text = scale * UiScaling.TextScale;
+        int S(int v) => (int)Math.Round(v * scale);
+        int Hold(int box, float px) => S(box) + UiType.LineHeight(px * text) - UiType.LineHeight(px * scale);
+
+        int nameY = S(148);
+        int nameH = Hold(28, NamePx);
+        int countY = nameY + nameH + S(14);
+        int countH = Hold(20, CountdownPx);
+        int buttonY = countY + countH + S(22);
+        int buttonH = Hold(44, ButtonPx);
+        int height = buttonY + buttonH + S(28);
+
+        using var g = Graphics.FromHwnd(IntPtr.Zero);
+        using var countFont = UiType.Create(CountdownPx * text);
+        using var buttonFont = UiType.Create(ButtonPx * text, FontStyle.Bold);
+        int countW = (int)Math.Ceiling(g.MeasureString(CountdownSample, countFont).Width) + RingSize(scale, text) + S(10) + S(40);
+        int keepW = (int)Math.Ceiling(g.MeasureString(KeepText, buttonFont).Width) + S(48);
+        int revertW = Math.Max(S(150), (int)Math.Ceiling(g.MeasureString(RevertText, buttonFont).Width) + S(48));
+        int width = Math.Max(S(DesignW), Math.Max(countW, keepW + revertW + S(12) + S(28) * 2));
+
+        return new OverlayLayout(nameY, nameH, countY, countH, buttonY, buttonH, revertW, new Size(width, height));
+    }
 
     /// <summary>
     /// Sizes the overlay for the screen it is about to appear on.
@@ -118,24 +176,30 @@ internal sealed class KeepLayoutDialog : Form
     /// The scale is also capped to what the screen can show. A 500×304 overlay at 225%
     /// is 1125×684, which does not fit on a display that is still at 1024×768 because
     /// its driver has not finished installing — and this is the one window that must
-    /// be readable then, because it holds the way back.
+    /// be readable then, because it holds the way back. Large text makes it bigger
+    /// still, so the cap is taken from the measured size rather than the design one.
     /// </summary>
     private void ApplyScale()
     {
         float scale = DeviceDpi / 96f;
+        var layout = Measure(scale);
 
         var area = WindowFollow.PrimaryBounds();
         if (area.Width > 0 && area.Height > 0)
         {
-            float fits = Math.Min(area.Width / (float)DesignW, area.Height / (float)DesignH);
-            scale = Math.Max(Math.Min(scale, fits), Math.Min(0.6f, scale));
+            float fits = Math.Min(area.Width / (float)layout.Size.Width, area.Height / (float)layout.Size.Height);
+            if (fits < 1f)
+            {
+                scale = Math.Max(scale * fits, Math.Min(0.6f, scale));
+                layout = Measure(scale);
+            }
         }
 
-        var size = new Size((int)Math.Round(DesignW * scale), (int)Math.Round(DesignH * scale));
-        if (_scale > 0 && Math.Abs(scale - _scale) < 0.001f && Size == size) return;
+        if (_scale > 0 && Math.Abs(scale - _scale) < 0.001f && Size == layout.Size) return;
 
         _scale = scale;
-        Size = size;
+        _layout = layout;
+        Size = layout.Size;
         Region = RoundedRegion(new Rectangle(Point.Empty, Size), (int)Math.Round(14 * scale));
         PlaceOnPrimary();
         Invalidate();
@@ -214,11 +278,11 @@ internal sealed class KeepLayoutDialog : Form
         // Pixel-sized, like every other font in this app. Points are already
         // DPI-relative, so multiplying a point size by the DPI scale sizes text twice
         // — which is what overflowed the countdown row at anything above 100%.
-        using (var nameFont = new Font("Segoe UI", 20f * UiScale, FontStyle.Regular, GraphicsUnit.Pixel))
+        using (var nameFont = UiType.CreateDisplay(NamePx * TextScale))
         using (var nameBrush = new SolidBrush(UiTheme.Text))
         {
             g.DrawString(_profileName, nameFont, nameBrush,
-                new RectangleF(pad, S(148), Width - pad * 2, S(28)), centre);
+                new RectangleF(pad, _layout.NameY, Width - pad * 2, _layout.NameH), centre);
         }
 
         DrawCountdown(g);
@@ -230,17 +294,13 @@ internal sealed class KeepLayoutDialog : Form
         int seconds = (int)Math.Ceiling(Remaining);
         float fraction = Math.Clamp(Remaining / _totalSeconds, 0f, 1f);
 
-        using var font = new Font("Segoe UI", 13f * UiScale, FontStyle.Regular, GraphicsUnit.Pixel);
+        using var font = UiType.Create(CountdownPx * TextScale);
         string text = $"Reverting in {seconds}s unless you keep it";
+        float textWidth = g.MeasureString(CountdownSample, font).Width;
 
-        // Measured against a fixed-width stand-in, not the live string: the group is
-        // centred, and measuring the real text would shift everything sideways the
-        // moment the count drops from two digits to one.
-        float textWidth = g.MeasureString("Reverting in 00s unless you keep it", font).Width;
-
-        int d = S(20);
+        int d = RingSize(UiScale, TextScale);
         int gap = S(10);
-        int y = S(190);
+        int y = _layout.CountY + (_layout.CountH - d) / 2;
         float groupWidth = d + gap + textWidth;
         float x = Math.Max(S(20), (Width - groupWidth) / 2f);
 
@@ -261,16 +321,16 @@ internal sealed class KeepLayoutDialog : Form
             FormatFlags = StringFormatFlags.NoWrap
         };
         g.DrawString(text, font, brush,
-            new RectangleF(ring.Right + gap, y, Width - (ring.Right + gap) - S(20), d), left);
+            new RectangleF(ring.Right + gap, _layout.CountY, Width - (ring.Right + gap) - S(20), _layout.CountH), left);
     }
 
     private void DrawButtons(Graphics g, StringFormat centre)
     {
         int pad = S(28);
-        int h = S(44);
-        int y = Height - h - pad;
+        int h = _layout.ButtonH;
+        int y = _layout.ButtonY;
         int gap = S(12);
-        int revertW = S(150);
+        int revertW = _layout.RevertW;
         int keepW = Width - pad * 2 - revertW - gap;
 
         _keepRect = new Rectangle(pad, y, keepW, h);
@@ -279,16 +339,16 @@ internal sealed class KeepLayoutDialog : Form
         using (var keepBg = new SolidBrush(_keepHot ? UiTheme.GoldHover : UiTheme.Gold))
             g.FillPath(keepBg, RoundedPath(_keepRect, S(7)));
         using (var keepInk = new SolidBrush(UiTheme.Ink))
-        using (var f = new Font("Segoe UI", 14f * UiScale, FontStyle.Bold, GraphicsUnit.Pixel))
-            g.DrawString("Keep this layout", f, keepInk, _keepRect, centre);
+        using (var f = UiType.Create(ButtonPx * TextScale, FontStyle.Bold))
+            g.DrawString(KeepText, f, keepInk, _keepRect, centre);
 
         using (var revertBg = new SolidBrush(_revertHot ? UiTheme.CardHover : UiTheme.Card))
             g.FillPath(revertBg, RoundedPath(_revertRect, S(7)));
         using (var border = new Pen(UiTheme.Line))
             g.DrawPath(border, RoundedPath(_revertRect, S(7)));
         using (var revertInk = new SolidBrush(UiTheme.Text))
-        using (var f = new Font("Segoe UI", 14f * UiScale, FontStyle.Regular, GraphicsUnit.Pixel))
-            g.DrawString("Revert now", f, revertInk, _revertRect, centre);
+        using (var f = UiType.Create(ButtonPx * TextScale))
+            g.DrawString(RevertText, f, revertInk, _revertRect, centre);
     }
 
     protected override void OnMouseMove(MouseEventArgs e)

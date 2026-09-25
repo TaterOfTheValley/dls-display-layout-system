@@ -100,6 +100,10 @@ public class TrayContext : ApplicationContext
         Microsoft.Win32.SystemEvents.PowerModeChanged += OnPowerModeChanged;
         Microsoft.Win32.SystemEvents.SessionSwitch += OnSessionSwitch;
 
+        // The tray outlives every window, so it is what keeps the Text size setting
+        // current; the menu and overlays read it each time they open.
+        Microsoft.Win32.SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
+
         // Anything the settings load wants the user to know — an upgraded file format,
         // or a file written by a newer build that was backed up before use.
         if (!string.IsNullOrWhiteSpace(ProfileManager.LastNotice))
@@ -191,14 +195,10 @@ public class TrayContext : ApplicationContext
     /// taskbar can sit on a display with a different scale factor than the one the
     /// app started on.
     /// </summary>
-    private static float TrayScale()
-    {
-        var screen = Screen.FromPoint(Cursor.Position);
-        using var g = Graphics.FromHwnd(IntPtr.Zero);
-        float dpi = g.DpiX <= 0 ? 96f : g.DpiX;
-        _ = screen;
-        return dpi / 96f;
-    }
+    private static float TrayScale() => UiScaling.DpiScaleAt(Cursor.Position);
+
+    private static void OnUserPreferenceChanged(object? sender, Microsoft.Win32.UserPreferenceChangedEventArgs e) =>
+        UiScaling.RefreshTextScale();
 
     /// <summary>
     /// Re-registers global hotkeys. Split out from the menu rebuild because it needs
@@ -623,6 +623,7 @@ public class TrayContext : ApplicationContext
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
         Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         Microsoft.Win32.SystemEvents.SessionSwitch -= OnSessionSwitch;
+        Microsoft.Win32.SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
 
         _profileReloadTimer.Stop();
         _profileReloadTimer.Dispose();
