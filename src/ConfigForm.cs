@@ -12,12 +12,29 @@ public class ConfigForm : Form
         public bool IsLive { get; set; }
     }
 
+    /// <summary>
+    /// The layouts as this window is editing them: a private copy, so nothing an edit
+    /// does is visible to the tray, the hotkeys or the settings file until Save. The
+    /// list the caller passed in is <see cref="_shared"/>.
+    /// </summary>
     private readonly List<DisplayProfile> _profiles;
+    private readonly List<DisplayProfile> _shared;
     private readonly Action _onSaveCallback;
     private readonly List<ProfileCardView> _cardViews = new();
     private DisplayProfile? _selectedProfile;
     private bool _syncingInspector;
     private bool _isCapturingHotkey;
+
+    // Reordering by dragging a card: the card being dragged, where the press landed,
+    // whether the mouse has moved far enough for it to be a drag rather than a click,
+    // and whether the click that follows a drag should be ignored.
+    private ProfileCardView? _dragView;
+    private Point _dragStart;
+    private bool _dragging;
+    private bool _suppressCardClick;
+
+    /// <summary>Set by Cancel: the window closes without asking about unsaved edits.</summary>
+    private bool _discardOnClose;
 
     private FlowLayoutPanel _profileCardsPanel = null!;
     private TextBox _nameTextBox = null!;
@@ -31,6 +48,7 @@ public class ConfigForm : Form
     private Button _identifyOneBtn = null!;
     private Button _captureCurrentLayoutBtn = null!;
     private Button _cancelBtn = null!;
+    private Button _saveBtn = null!;
     private Button _settingsFileBtn = null!;
     private Button _addProfileBtn = null!;
     private Button _deleteProfileBtn = null!;
@@ -88,7 +106,6 @@ public class ConfigForm : Form
     private List<DisplayInfo> _liveForEmptyState = new();
     private bool _dirty;
     private bool _dirtyNotified;
-    private System.Windows.Forms.Timer? _autoSaveTimer;
     private bool _loading;
 
     public bool HasUnsavedChanges => _dirty;
@@ -214,7 +231,8 @@ public class ConfigForm : Form
 
     public ConfigForm(List<DisplayProfile> profiles, Action onSaveCallback)
     {
-        _profiles = profiles;
+        _shared = profiles;
+        _profiles = profiles.Select(p => p.Clone(newId: false)).ToList();
         _onSaveCallback = onSaveCallback;
 
         // Scaling here is fully manual (DpiScale / S(...) below, used throughout every
@@ -311,10 +329,20 @@ public class ConfigForm : Form
                     ApplySelected();
                     return true;
 
+                case Keys.S:
+                    SaveChanges();
+                    return true;
+
                 case Keys.N:
                     AddProfileBtn_Click(this, EventArgs.Empty);
                     return true;
             }
+        }
+
+        if (!_isCapturingHotkey && keyData is (Keys.Alt | Keys.Left) or (Keys.Alt | Keys.Right))
+        {
+            MoveSelected(keyData == (Keys.Alt | Keys.Left) ? -1 : 1);
+            return true;
         }
 
         // Escape closes, unless a shortcut is being recorded — there it means "stop
@@ -386,6 +414,7 @@ public class ConfigForm : Form
         RebuildProfileCards();
         LoadSelectedProfile();
         UpdateEmptyState();
+        UpdateSaveState();
     }
 
     /// <summary>
@@ -592,7 +621,7 @@ public class ConfigForm : Form
         _rescaling = true;
         try
         {
-            // Autosave keys off edits, not off redrawing the window, so the rebuild
+            // Dirty state keys off edits, not off redrawing the window, so the rebuild
             // must not read as one: LoadSelectedProfile repopulates the name box, and
             // that alone would otherwise mark the layout dirty.
             bool dirty = _dirty, notified = _dirtyNotified;
@@ -692,7 +721,10 @@ public class ConfigForm : Form
         _profiles.Add(created);
         _selectedProfile = created;
         MarkDirty();
-        FlushAutoSave();
+
+        // The button says "save", and there is nothing else on screen yet to hold the
+        // edit back for.
+        SaveChanges();
         RebuildProfileCards();
         LoadSelectedProfile();
         UpdateEmptyState();
@@ -1156,12 +1188,10 @@ public class ConfigForm : Form
         };
         _feedbackLabel.TextChanged += (_, _) => UpdateFooterStart();
 
-        // Reading of the selected layout against the desktop as it is now. With
-        // autosave there is no unsaved state to warn about any more, so the question
-        // that matters before pressing Apply is no longer "have I saved this?" but
-        // "is this layout what my screens are actually doing?" — and nothing on screen
-        // answered it. It sits against the Apply button because that is where the
-        // answer is needed.
+        // Reading of the selected layout against the desktop as it is now: the
+        // question that matters before pressing Apply is "is this layout what my
+        // screens are actually doing?". It sits against the Apply button because that
+        // is where the answer is needed.
         _statusLabel = new Label
         {
             ForeColor = UiTheme.Muted,
@@ -1171,21 +1201,32 @@ public class ConfigForm : Form
             TextAlign = ContentAlignment.MiddleRight
         };
 
+        // Reads "Close" while there is nothing to lose, and "Cancel" once there is, so
+        // the button says what it will do to the edits.
         _cancelBtn = UiTheme.MakeButton("Close", false, TextScale, F(UiType.Body));
         _cancelBtn.Size = new Size(T(100), Hold(40, UiType.Body));
-        _cancelBtn.Click += (_, _) => Close();
+        _cancelBtn.Click += (_, _) =>
+        {
+            _discardOnClose = true;
+            Close();
+        };
+        _tips.SetToolTip(_cancelBtn, "Close the editor. Unsaved edits are discarded.");
+
+        _saveBtn = UiTheme.MakeButton("Save", false, TextScale, F(UiType.Body));
+        _saveBtn.Size = new Size(T(100), Hold(40, UiType.Body));
+        _saveBtn.Click += (_, _) => SaveChanges();
+        _tips.SetToolTip(_saveBtn, "Save your edits (Ctrl+S)");
 
         _settingsFileBtn = UiTheme.MakeButton("Settings file", false, TextScale, F(UiType.Body));
         _tips.SetToolTip(_settingsFileBtn, $"Show {ProfileManager.ConfigPath} in File Explorer");
         _settingsFileBtn.Click += (_, _) => OpenSettingsLocation();
 
-        // One commit action. Edits persist on their own (see MarkDirty), so there is
-        // nothing left for a Save button to do, and "apply without saving" was a
-        // distinction with no meaning once saving is automatic.
+        // Apply saves first (see ApplySelected), so what Windows is switched to is
+        // always what is on disk.
         _applyBtn = UiTheme.MakeButton("Apply layout", true, TextScale, F(UiType.Body));
         _applyBtn.Size = new Size(T(150), Hold(40, UiType.Body));
         _applyBtn.Click += (_, _) => ApplySelected();
-        _tips.SetToolTip(_applyBtn, "Switch Windows to this layout. It reverts by itself unless you confirm.");
+        _tips.SetToolTip(_applyBtn, "Save, then switch Windows to this layout. It reverts by itself unless you confirm.");
 
         footer.Resize += (_, _) =>
         {
@@ -1193,17 +1234,19 @@ public class ConfigForm : Form
             // or pushed off the edge, so it is placed first and everything else takes
             // what is left.
             int applyW = Fit(footer.Width, T(150), T(104), 0.20f);
-            int cancelW = Fit(footer.Width, T(100), T(72), 0.13f);
+            int cancelW = Fit(footer.Width, T(100), T(72), 0.11f);
+            int saveW = Fit(footer.Width, T(90), T(64), 0.10f);
             int btnH = Math.Min(Hold(40, UiType.Body), footer.Height - S(14));
 
             _applyBtn.SetBounds(footer.Width - applyW - S(20), (footer.Height - btnH) / 2, applyW, btnH);
-            _cancelBtn.SetBounds(_applyBtn.Left - S(10) - cancelW, (footer.Height - btnH) / 2, cancelW, btnH);
+            _saveBtn.SetBounds(_applyBtn.Left - S(10) - saveW, (footer.Height - btnH) / 2, saveW, btnH);
+            _cancelBtn.SetBounds(_saveBtn.Left - S(10) - cancelW, (footer.Height - btnH) / 2, cancelW, btnH);
 
             int settingsW = Fit(footer.Width, T(124), T(88), 0.16f);
             _settingsFileBtn.SetBounds(_cancelBtn.Left - S(10) - settingsW,
                 (footer.Height - btnH) / 2, settingsW, btnH);
 
-            int statusW = Math.Min(T(320), Math.Max(T(80), _settingsFileBtn.Left - T(200)));
+            int statusW = Math.Min(T(300), Math.Max(T(80), _settingsFileBtn.Left - T(200)));
             _statusLabel.SetBounds(_settingsFileBtn.Left - S(18) - statusW, 0, statusW, footer.Height);
 
             // The transient "what just happened" line shares the row with the standing
@@ -1221,6 +1264,7 @@ public class ConfigForm : Form
         footer.Controls.Add(_statusLabel);
         footer.Controls.Add(_settingsFileBtn);
         footer.Controls.Add(_cancelBtn);
+        footer.Controls.Add(_saveBtn);
         footer.Controls.Add(_applyBtn);
         _footer = footer;
         return footer;
@@ -1242,9 +1286,6 @@ public class ConfigForm : Form
 
     private void OpenSettingsLocation()
     {
-        FlushPendingEdits();
-        if (HasUnsavedChanges) return;
-
         if (!AppPaths.TryOpenSettingsLocation(out string error))
         {
             _feedbackLabel.ForeColor = UiTheme.Danger;
@@ -1283,7 +1324,7 @@ public class ConfigForm : Form
     }
 
     private const string CanvasHintText =
-        "Click a monitor to select it  ·  Double-click for main  ·  Arrow keys nudge  ·  Scroll to zoom  ·  Ctrl+1…9 switch layout  ·  Ctrl+Enter apply";
+        "Click a monitor to select it  ·  Double-click for main  ·  Arrow keys nudge  ·  Scroll to zoom  ·  Ctrl+1…9 switch layout  ·  Drag a layout or Alt+←/→ to reorder  ·  Ctrl+S save  ·  Ctrl+Enter apply";
 
     private const int RailCardW = 196;
     private const int RailCardH = 84;
@@ -1380,9 +1421,23 @@ public class ConfigForm : Form
             TextAlign = HorizontalAlignment.Center
         };
         _hotkeyTextBox.GotFocus += (_, _) => StartHotkeyCapture();
+        _hotkeyTextBox.LostFocus += HotkeyTextBox_LostFocus;
         _hotkeyTextBox.KeyDown += HotkeyTextBox_KeyDown;
         _captureHotkeyBtn = UiTheme.MakeButton("Record", false, TextScale, F(UiType.Body));
-        _captureHotkeyBtn.Click += (_, _) => { _hotkeyTextBox.Focus(); StartHotkeyCapture(); };
+
+        // Doubles as the way out while listening: it reads "Cancel" then, and pressing
+        // it stops listening without recording anything.
+        _captureHotkeyBtn.Click += (_, _) =>
+        {
+            if (_isCapturingHotkey)
+            {
+                EndHotkeyCapture();
+                return;
+            }
+
+            _hotkeyTextBox.Focus();
+            StartHotkeyCapture();
+        };
         _tips.SetToolTip(_hotkeyTextBox, "Global shortcut that switches to this layout");
 
         _captureCurrentLayoutBtn = UiTheme.MakeButton("Capture", false, TextScale, F(UiType.Body));
@@ -1500,9 +1555,19 @@ public class ConfigForm : Form
             var view = new ProfileCardView { Profile = p, CardPanel = card };
 
             card.Paint += (_, e) => PaintLayoutCard(e.Graphics, card, view);
-            card.Click += (_, _) => SelectProfile(p);
+            card.Click += (_, _) =>
+            {
+                // The click that ends a drag is not a selection; the drag already did that.
+                if (_suppressCardClick) _suppressCardClick = false;
+                else SelectProfile(p);
+            };
             card.MouseEnter += (_, _) => card.Invalidate();
             card.MouseLeave += (_, _) => card.Invalidate();
+            card.MouseDown += (_, e) => BeginCardDrag(view, e);
+            card.MouseMove += (_, e) => DragCard(view, e);
+            card.MouseUp += (_, _) => EndCardDrag(view);
+            card.MouseCaptureChanged += (_, _) => EndCardDrag(view);
+            _tips.SetToolTip(card, "Drag to reorder, or select and press Alt+← / Alt+→");
 
             _cardViews.Add(view);
             _profileCardsPanel.Controls.Add(card);
@@ -1613,6 +1678,10 @@ public class ConfigForm : Form
     private void SelectProfile(DisplayProfile p)
     {
         if (_selectedProfile?.Id == p.Id) return;
+
+        // A shortcut captured now would land on the layout being selected, not the
+        // one it was being recorded for.
+        EndHotkeyCapture();
         _selectedProfile = p;
         InvalidateProfileCards();
         LoadSelectedProfile();
@@ -1643,16 +1712,35 @@ public class ConfigForm : Form
         _loading = false;
     }
 
-    public void ReloadProfilesFromDisk(IEnumerable<DisplayProfile> profiles)
+    /// <summary>
+    /// The settings file changed underneath the window. Unsaved edits are not thrown
+    /// away for it — they are the user's work, and the file can be re-read any time —
+    /// so with edits pending the window keeps them and says so; Save then writes over
+    /// what changed on disk, and Cancel picks it up.
+    /// </summary>
+    public void ReloadProfilesFromDisk(IEnumerable<DisplayProfile> latest)
     {
-        _loading = true;
-        if (!ReferenceEquals(_profiles, profiles))
+        if (_dirty)
         {
-            var replacement = profiles.ToList();
-            _profiles.Clear();
-            _profiles.AddRange(replacement);
+            _feedbackLabel.ForeColor = UiTheme.Gold;
+            _feedbackLabel.Text = "The settings file changed on disk. Saving overwrites it; Cancel reloads it.";
+            return;
         }
-        _selectedProfile = _profiles.FirstOrDefault();
+
+        ReplaceDraft(latest);
+    }
+
+    /// <summary>Replaces the draft with a copy of <paramref name="source"/>, keeping the
+    /// selected layout selected if it is still there.</summary>
+    private void ReplaceDraft(IEnumerable<DisplayProfile> source)
+    {
+        string? selectedId = _selectedProfile?.Id;
+        var copies = source.Select(p => p.Clone(newId: false)).ToList();
+
+        _loading = true;
+        _profiles.Clear();
+        _profiles.AddRange(copies);
+        _selectedProfile = _profiles.FirstOrDefault(p => p.Id == selectedId) ?? _profiles.FirstOrDefault();
         RebuildProfileCards();
         LoadSelectedProfile();
         MarkClean();
@@ -1771,23 +1859,46 @@ public class ConfigForm : Form
         _scaleBox.SelectedIndex = 0;
     }
 
-    /// <summary>Stops listening for a shortcut without recording one.</summary>
-    private void EndHotkeyCapture()
+    /// <summary>
+    /// Stops listening for a shortcut without recording one. Focus is taken off the
+    /// shortcut box unless something else is already taking it: putting it back to
+    /// nothing in the middle of a click on another control would swallow that click.
+    /// </summary>
+    private void EndHotkeyCapture(bool releaseFocus = true)
     {
         if (!_isCapturingHotkey) return;
         _isCapturingHotkey = false;
         _captureHotkeyBtn.Text = "Record";
         _hotkeyHint.ForeColor = UiTheme.Muted;
         _hotkeyHint.Text = CanvasHintText;
-        ActiveControl = null;
+        if (releaseFocus) ActiveControl = null;
     }
 
     private void StartHotkeyCapture()
     {
         _isCapturingHotkey = true;
-        _hotkeyHint.Text = "Listening… press a key combination (Ctrl, Alt, Shift, Win + key)";
+        _hotkeyHint.Text = "Listening… press a key combination (Ctrl, Alt, Shift, Win + key), or Esc to cancel";
         _hotkeyHint.ForeColor = UiTheme.Gold;
-        _captureHotkeyBtn.Text = "Listening";
+        _captureHotkeyBtn.Text = "Cancel";
+    }
+
+    /// <summary>
+    /// Clicking anywhere else, or switching to another window, ends the listening. It
+    /// used to carry on invisibly — the button still said "Listening" and Ctrl+1…9 stayed
+    /// dead — until the user found Escape. Pressing the Record button is the exception:
+    /// it takes focus on the way to its own click, which decides what happens next.
+    /// </summary>
+    private void HotkeyTextBox_LostFocus(object? sender, EventArgs e)
+    {
+        if (!_isCapturingHotkey) return;
+
+        bool onRecordButton = (MouseButtons & MouseButtons.Left) != 0 &&
+            _captureHotkeyBtn.ClientRectangle.Contains(_captureHotkeyBtn.PointToClient(Cursor.Position));
+        if (onRecordButton) return;
+
+        // Leaving the window has to release focus too, or coming back would put it
+        // straight back in the box and start listening again.
+        EndHotkeyCapture(releaseFocus: ActiveForm != this);
     }
 
     private void HotkeyTextBox_KeyDown(object? sender, KeyEventArgs e)
@@ -1835,10 +1946,15 @@ public class ConfigForm : Form
     {
         if (_selectedProfile == null) return;
 
+        string name = _selectedProfile.Name;
+        var answer = MessageBox.Show(this,
+            $"Delete the layout '{name}'?\n\nIts shortcut stops working and it leaves the tray menu once you save.",
+            "Delete layout", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2);
+        if (answer != DialogResult.Yes) return;
+
         // Deleting the last layout is allowed. The app starts with none and has a
         // first-run state for exactly that, so refusing to let the user get back
         // there was the editor disagreeing with the rest of the app.
-        string name = _selectedProfile.Name;
         _profiles.Remove(_selectedProfile);
         _selectedProfile = _profiles.FirstOrDefault();
 
@@ -1888,43 +2004,137 @@ public class ConfigForm : Form
         return name;
     }
 
-    private void ScheduleAutoSave()
+    /// <summary>
+    /// Writes the edits to the settings file and hands them to the rest of the app.
+    /// Returns false, with the reason on the footer, if the file could not be written —
+    /// the edits are then still pending, not lost.
+    /// </summary>
+    private bool SaveChanges()
     {
-        _autoSaveTimer ??= CreateAutoSaveTimer();
-        _autoSaveTimer.Stop();
-        _autoSaveTimer.Start();
-    }
-
-    private System.Windows.Forms.Timer CreateAutoSaveTimer()
-    {
-        var timer = new System.Windows.Forms.Timer { Interval = 600 };
-        timer.Tick += (_, _) =>
-        {
-            timer.Stop();
-            FlushAutoSave();
-        };
-        return timer;
-    }
-
-    /// <summary>Writes any pending edits to disk immediately.</summary>
-    public void FlushPendingEdits() => FlushAutoSave();
-
-    /// <summary>Writes pending edits immediately. Called on close so nothing is lost
-    /// inside the debounce window.</summary>
-    private void FlushAutoSave()
-    {
-        _autoSaveTimer?.Stop();
-        if (!_dirty) return;
+        if (!_dirty) return true;
 
         if (!ProfileManager.TrySaveProfiles(_profiles, out string error))
         {
             _feedbackLabel.ForeColor = UiTheme.Danger;
             _feedbackLabel.Text = error;
-            return;
+            return false;
         }
 
+        // The shared list is what the tray and the hotkeys read; it is only brought up
+        // to date once the file is, so the two never disagree about what is saved.
+        _shared.Clear();
+        _shared.AddRange(_profiles.Select(p => p.Clone(newId: false)));
         _onSaveCallback?.Invoke();
         MarkClean();
+
+        _feedbackLabel.ForeColor = UiTheme.Ok;
+        _feedbackLabel.Text = "Saved.";
+        return true;
+    }
+
+    /// <summary>
+    /// Settles unsaved edits before something else needs the window out of the way — a
+    /// close, an update, quitting. Asks whether to save them; returns false if the
+    /// user would rather keep editing, or if saving failed.
+    /// </summary>
+    public bool ResolveUnsavedChanges()
+    {
+        if (!_dirty) return true;
+
+        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+        Activate();
+
+        var answer = MessageBox.Show(this,
+            "You have unsaved changes to your layouts. Save them?",
+            AppInfo.Name, MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+        switch (answer)
+        {
+            case DialogResult.Yes:
+                return SaveChanges();
+
+            case DialogResult.No:
+                ReplaceDraft(_shared);
+                return true;
+
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>Moves the selected layout one place along the strip.</summary>
+    private void MoveSelected(int delta)
+    {
+        if (_selectedProfile == null) return;
+        int from = _profiles.IndexOf(_selectedProfile);
+        int to = Math.Clamp(from + delta, 0, _profiles.Count - 1);
+        if (from < 0 || to == from) return;
+
+        MoveProfile(_selectedProfile, to);
+        _feedbackLabel.ForeColor = UiTheme.Gold;
+        _feedbackLabel.Text = to < 9
+            ? $"'{_selectedProfile.Name}' is now layout {to + 1} — Ctrl+{to + 1} switches to it."
+            : $"'{_selectedProfile.Name}' is now layout {to + 1}.";
+    }
+
+    /// <summary>Puts a layout at <paramref name="index"/>, in the list and on the strip.
+    /// The order is the one the tray menu and Ctrl+1…9 use, so it is part of the edit.</summary>
+    private void MoveProfile(DisplayProfile profile, int index)
+    {
+        int from = _profiles.IndexOf(profile);
+        if (from < 0 || from == index) return;
+
+        _profiles.RemoveAt(from);
+        _profiles.Insert(index, profile);
+
+        var view = _cardViews.First(v => v.Profile == profile);
+        _cardViews.Remove(view);
+        _cardViews.Insert(index, view);
+        _profileCardsPanel.Controls.SetChildIndex(view.CardPanel, index);
+        _profileCardsPanel.ScrollControlIntoView(view.CardPanel);
+        MarkDirty();
+    }
+
+    private void BeginCardDrag(ProfileCardView view, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left) return;
+        _dragView = view;
+        _dragStart = e.Location;
+        _dragging = false;
+        _suppressCardClick = false;
+    }
+
+    /// <summary>
+    /// Reorders live while the card is dragged: it swaps places with each neighbour as
+    /// the pointer crosses that neighbour's middle, so the strip always shows the order
+    /// that dropping now would leave, with no separate drop marker to draw.
+    /// </summary>
+    private void DragCard(ProfileCardView view, MouseEventArgs e)
+    {
+        if (_dragView != view || (e.Button & MouseButtons.Left) == 0) return;
+
+        if (!_dragging)
+        {
+            var slop = SystemInformation.DragSize;
+            if (Math.Abs(e.X - _dragStart.X) < slop.Width / 2 && Math.Abs(e.Y - _dragStart.Y) < slop.Height / 2) return;
+
+            _dragging = true;
+            view.CardPanel.Cursor = Cursors.SizeAll;
+            SelectProfile(view.Profile);
+        }
+
+        int x = _profileCardsPanel.PointToClient(Cursor.Position).X;
+        int target = _cardViews.Count(v => v != view && v.CardPanel.Left + v.CardPanel.Width / 2 < x);
+        MoveProfile(view.Profile, target);
+    }
+
+    private void EndCardDrag(ProfileCardView view)
+    {
+        if (_dragView != view) return;
+
+        _suppressCardClick = _dragging;
+        _dragging = false;
+        _dragView = null;
+        view.CardPanel.Cursor = Cursors.Hand;
     }
 
     private void ApplySelected()
@@ -1940,7 +2150,7 @@ public class ConfigForm : Form
 
         // Pending edits go to disk before the switch, so what gets applied and what
         // is stored can never disagree.
-        FlushAutoSave();
+        if (!SaveChanges()) return;
 
         // No "this will turn off X" modal any more. The apply itself now reverts
         // unless confirmed (KeepLayoutDialog), so a blocking warning beforehand asked
@@ -1978,27 +2188,22 @@ public class ConfigForm : Form
     }
 
     /// <summary>
-    /// Records an edit and schedules it to disk. Saving is automatic: there is no
-    /// Save button, so an edit the user can see must already be an edit that
-    /// survives closing the window.
-    ///
-    /// Debounced rather than immediate — dragging a monitor raises this on every
-    /// mouse move, and rewriting .dls per frame would be pointless churn
-    /// (and would wake the file watcher in TrayContext each time).
+    /// Records an unsaved edit. Nothing is written until Save: dragging a monitor
+    /// raises this on every mouse move, so it must stay cheap — the title and the
+    /// buttons are only touched on the first edit after a save.
     /// </summary>
     private void MarkDirty()
     {
         if (_loading) return;
         _dirty = true;
-        ScheduleAutoSave();
 
-        // The edit is now saved but not applied, which is precisely the state the
-        // footer has to keep visible.
+        // The edit is not applied, which is the state the footer has to keep visible.
         UpdateLayoutStatus();
 
         if (_dirtyNotified) return;
         _dirtyNotified = true;
         UpdateWindowTitle();
+        UpdateSaveState();
     }
 
     private void MarkClean()
@@ -2006,11 +2211,21 @@ public class ConfigForm : Form
         _dirty = false;
         _dirtyNotified = false;
         UpdateWindowTitle();
+        UpdateSaveState();
+    }
+
+    /// <summary>Save has something to do only while there are edits, and Close becomes
+    /// Cancel then, because closing is what throws them away.</summary>
+    private void UpdateSaveState()
+    {
+        if (_saveBtn == null || _cancelBtn == null) return;
+        _saveBtn.Enabled = _dirty;
+        _cancelBtn.Text = _dirty ? "Cancel" : "Close";
     }
 
     private void UpdateWindowTitle()
     {
-        string star = "";
+        string star = _dirty ? " *" : "";
         var live = LiveProfile();
         string active = live != null ? $"  —  {live.Name} is active" : "";
         Text = AppInfo.Name + star + active;
@@ -2049,7 +2264,7 @@ public class ConfigForm : Form
     /// Says whether the selected layout is what the screens are doing, and if not, how
     /// many things applying it would change. Cheap — it compares against the cached
     /// topology — so it can run on every edit, which is the point: an edit that
-    /// autosaves itself should visibly become something still waiting to be applied.
+    /// is only saved, or not even that yet, should visibly be waiting to be applied.
     /// </summary>
     private void UpdateLayoutStatus()
     {
@@ -2150,9 +2365,16 @@ public class ConfigForm : Form
 
     private void ConfigForm_FormClosing(object? sender, FormClosingEventArgs e)
     {
-        // Edits are already saved; just make sure nothing is still sitting in the
-        // debounce window. No "save your changes?" prompt — with autosave there is
-        // no unsaved state to ask about.
-        FlushAutoSave();
+        if (_discardOnClose || !_dirty) return;
+
+        // Windows shutting down, or the process being ended, will not wait for an
+        // answer; losing the edits would be worse than saving them unasked.
+        if (e.CloseReason is CloseReason.WindowsShutDown or CloseReason.TaskManagerClosing)
+        {
+            SaveChanges();
+            return;
+        }
+
+        if (!ResolveUnsavedChanges()) e.Cancel = true;
     }
 }
