@@ -128,7 +128,14 @@ Drag a layout along the strip to reorder it — the order is the one the tray me
 and `Ctrl` + `1`…`9` use. **Delete** asks before it removes a layout.
 
 While recording a shortcut, **Cancel**, `Esc`, or clicking anywhere else stops
-listening without changing it.
+listening without changing it, and `Backspace` or `Delete` removes the shortcut.
+
+A global shortcut takes its key away from every program, so DLS only accepts ones
+that are safe: `Ctrl`, `Alt` or `Win` plus a key, `Shift` plus a function key, or a
+function key from `F13` to `F24` on its own. Caps Lock, Num Lock, Scroll Lock and bare
+letters are refused, and so is a shortcut another layout already uses. If a settings
+file contains one anyway — hand-edited, or from an earlier build — DLS removes it when
+it loads the file, saves the cleaned file, and tells you which layouts lost a shortcut.
 
 | Key | Does |
 |---|---|

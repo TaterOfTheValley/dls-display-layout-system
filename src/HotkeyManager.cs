@@ -37,10 +37,6 @@ public class HotkeyManager : IDisposable
     [DllImport("user32.dll")]
     private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
-    private const uint MOD_ALT = 0x0001;
-    private const uint MOD_CONTROL = 0x0002;
-    private const uint MOD_SHIFT = 0x0004;
-    private const uint MOD_WIN = 0x0008;
     private const uint MOD_NOREPEAT = 0x4000;
 
     private readonly HotkeyWindow _window;
@@ -60,53 +56,17 @@ public class HotkeyManager : IDisposable
         }
     }
 
+    /// <summary>
+    /// Registers a global shortcut. Refuses one that <see cref="Hotkeys.Problem(string?)"/>
+    /// rejects, whatever the caller checked: a bare Caps Lock or letter registered here
+    /// would stop that key working in every program until DLS exits.
+    /// </summary>
     public bool Register(string hotkeyString, Action action)
     {
-        if (string.IsNullOrWhiteSpace(hotkeyString)) return false;
-
-        uint modifiers = MOD_NOREPEAT;
-        Keys key = Keys.None;
-
-        var tokens = hotkeyString.Split('+', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-        foreach (var token in tokens)
-        {
-            if (token.Equals("Ctrl", StringComparison.OrdinalIgnoreCase) || token.Equals("Control", StringComparison.OrdinalIgnoreCase))
-            {
-                modifiers |= MOD_CONTROL;
-            }
-            else if (token.Equals("Alt", StringComparison.OrdinalIgnoreCase))
-            {
-                modifiers |= MOD_ALT;
-            }
-            else if (token.Equals("Shift", StringComparison.OrdinalIgnoreCase))
-            {
-                modifiers |= MOD_SHIFT;
-            }
-            else if (token.Equals("Win", StringComparison.OrdinalIgnoreCase) || token.Equals("Windows", StringComparison.OrdinalIgnoreCase))
-            {
-                modifiers |= MOD_WIN;
-            }
-            else
-            {
-                if (Enum.TryParse<Keys>(token, true, out var parsedKey))
-                {
-                    key = parsedKey;
-                }
-                else if (token.Length == 1 && char.IsDigit(token[0]))
-                {
-                    key = (Keys)((int)Keys.D0 + (token[0] - '0'));
-                }
-                else if (token.Length == 1 && char.IsLetter(token[0]))
-                {
-                    key = (Keys)((int)Keys.A + (char.ToUpperInvariant(token[0]) - 'A'));
-                }
-            }
-        }
-
-        if (key == Keys.None) return false;
+        if (Hotkeys.Problem(hotkeyString) != null || !Hotkeys.TryParse(hotkeyString, out var combo)) return false;
 
         int id = _currentId++;
-        bool success = RegisterHotKey(_window.Handle, id, modifiers, (uint)key);
+        bool success = RegisterHotKey(_window.Handle, id, combo.Modifiers | MOD_NOREPEAT, (uint)combo.Key);
         if (success)
         {
             _hotkeyActions[id] = action;
