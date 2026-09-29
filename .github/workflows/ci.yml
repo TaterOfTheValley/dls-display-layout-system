@@ -43,6 +43,7 @@ jobs:
             --packVersion 0.1.0-alpha \
             --packDir ci-publish \
             --mainExe DLS.exe \
+            --icon src/Assets/dls.ico \
             --runtime win-x64 \
             --noPortable true \
             --releaseNotes RELEASE_NOTES.md \

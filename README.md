@@ -22,11 +22,13 @@ other two back exactly as they were. That is what this does.
 DLS adds itself to Windows startup on first launch — a tray utility you have to
 remember to start is one you stop using. It is a ticked item in the tray menu, so
 it is visible and one click to turn off, and it uses the per-user `Run` key, so no
-admin rights and it shows up in Task Manager's Startup tab like anything else.
+admin rights and it shows up in Windows' Startup apps list like anything else.
+At sign-in it starts in the tray; launching DLS yourself opens the layout editor.
 
-If you disable it *in Task Manager*, the tray item greys out and says so rather
-than pretending otherwise — Windows records that separately, and only Task Manager
-can undo it.
+The tray menu also opens **Manage startup in Windows…**. If you disable DLS in
+Windows, the in-app toggle greys out and says so; re-enable it in Windows' Startup
+apps page. Windows calculates the **Startup impact** value after observing a
+sign-in, so a new entry may initially say **Not measured**.
 
 On first launch DLS also checks its environment and tells you if something is
 wrong: an unsupported Windows build, a display API that does not respond, no
@@ -59,6 +61,8 @@ If you already run an older standalone DLS, **Exit** it from the tray before run
 installed copy opens. Both copies use the same layouts, so no export is needed.
 The installer is per-user and needs no administrator rights. It installs under
 `%LOCALAPPDATA%\DLS-DisplayLayoutSystem`; layouts remain under `%LOCALAPPDATA%\DLS`.
+It appears in Windows' Installed apps list for uninstalling. The executable,
+shortcuts, installer, tray, and editor use the same DLS icon.
 
 For manual standalone updates, put the EXE in a permanent folder as `DLS.exe`.
 On each update, exit DLS, replace that file with the newly downloaded version
