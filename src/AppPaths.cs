@@ -24,6 +24,35 @@ internal static class AppPaths
 
     public static string SettingsFile => Path.Combine(SettingsDirectory, SettingsFileName);
 
+    /// <summary>Shows the live settings file in File Explorer. On a first run, before
+    /// the first save creates it, opens the settings directory instead.</summary>
+    public static bool TryOpenSettingsLocation(out string error)
+    {
+        try
+        {
+            Directory.CreateDirectory(SettingsDirectory);
+            bool settingsFileExists = File.Exists(SettingsFile);
+            string target = settingsFileExists ? SettingsFile : SettingsDirectory;
+            string arguments = settingsFileExists
+                ? $"/select,\"{target}\""
+                : $"\"{target}\"";
+
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = arguments,
+                UseShellExecute = true
+            });
+            error = string.Empty;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = $"Could not open the settings location ({SettingsFile}): {ex.Message}";
+            return false;
+        }
+    }
+
     private static string ResolveDirectory()
     {
         try

@@ -52,7 +52,7 @@ internal static class Program
     /// exception in a WinExe raises a modal Windows Error Reporting dialog, which
     /// hangs a non-interactive run forever instead of failing.
     /// </summary>
-    private static void RunDiagnostic(string[] args, Action body)
+    private static void RunDiagnostic(string[] args, Action body, bool console = true)
     {
         string? tee = null;
         for (int i = 0; i < args.Length - 1; i++)
@@ -60,11 +60,16 @@ internal static class Program
             if (args[i].Equals("--out", StringComparison.OrdinalIgnoreCase)) tee = args[i + 1];
         }
 
-        StartConsole(tee);
+        // Without a console the output is discarded, which is what a scheduled run
+        // wants: no window flashing up, the result goes to the log.
+        if (console) StartConsole(tee);
+
+        // Set before the body, not after: a body that reports failure by setting the
+        // exit code (--preflight, the verbs) would otherwise be reset to success.
+        Environment.ExitCode = 0;
         try
         {
             body();
-            Environment.ExitCode = 0;
         }
         catch (Exception ex)
         {
@@ -112,6 +117,12 @@ internal static class Program
         AppPaths.Initialise();
 
         args = TakeTextScaleOverride(args);
+
+        if (Cli.Handles(args))
+        {
+            RunDiagnostic(args, () => Environment.ExitCode = Cli.Run(args), console: !Cli.WantsQuiet(args));
+            return;
+        }
 
         if (args.Length > 0 && args[0].Equals("--preflight", StringComparison.OrdinalIgnoreCase))
         {

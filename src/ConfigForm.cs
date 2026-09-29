@@ -31,6 +31,7 @@ public class ConfigForm : Form
     private Button _identifyOneBtn = null!;
     private Button _captureCurrentLayoutBtn = null!;
     private Button _cancelBtn = null!;
+    private Button _settingsFileBtn = null!;
     private Button _addProfileBtn = null!;
     private Button _deleteProfileBtn = null!;
     private Button _identifyAllBtn = null!;
@@ -287,8 +288,10 @@ public class ConfigForm : Form
     /// </summary>
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
-        // Ctrl+1..9 jumps straight to a layout, mirroring the global shortcuts.
-        if ((keyData & Keys.Control) == Keys.Control)
+        // While recording, let every chord reach the textbox; otherwise Ctrl+1..9
+        // and the editor's other Ctrl commands consume shortcuts before they can be
+        // captured.
+        if (!_isCapturingHotkey && (keyData & Keys.Control) == Keys.Control)
         {
             var key = keyData & Keys.KeyCode;
             if (key >= Keys.D1 && key <= Keys.D9)
@@ -1171,6 +1174,10 @@ public class ConfigForm : Form
         _cancelBtn.Size = new Size(T(100), Hold(40, UiType.Body));
         _cancelBtn.Click += (_, _) => Close();
 
+        _settingsFileBtn = UiTheme.MakeButton("Settings file", false, TextScale, F(UiType.Body));
+        _tips.SetToolTip(_settingsFileBtn, $"Show {ProfileManager.ConfigPath} in File Explorer");
+        _settingsFileBtn.Click += (_, _) => OpenSettingsLocation();
+
         // One commit action. Edits persist on their own (see MarkDirty), so there is
         // nothing left for a Save button to do, and "apply without saving" was a
         // distinction with no meaning once saving is automatic.
@@ -1191,8 +1198,12 @@ public class ConfigForm : Form
             _applyBtn.SetBounds(footer.Width - applyW - S(20), (footer.Height - btnH) / 2, applyW, btnH);
             _cancelBtn.SetBounds(_applyBtn.Left - S(10) - cancelW, (footer.Height - btnH) / 2, cancelW, btnH);
 
-            int statusW = Math.Min(T(320), Math.Max(T(120), _cancelBtn.Left - T(200)));
-            _statusLabel.SetBounds(_cancelBtn.Left - S(18) - statusW, 0, statusW, footer.Height);
+            int settingsW = Fit(footer.Width, T(124), T(88), 0.16f);
+            _settingsFileBtn.SetBounds(_cancelBtn.Left - S(10) - settingsW,
+                (footer.Height - btnH) / 2, settingsW, btnH);
+
+            int statusW = Math.Min(T(320), Math.Max(T(80), _settingsFileBtn.Left - T(200)));
+            _statusLabel.SetBounds(_settingsFileBtn.Left - S(18) - statusW, 0, statusW, footer.Height);
 
             // The transient "what just happened" line shares the row with the standing
             // status reading. On a narrow footer there is only room for one, and the
@@ -1207,6 +1218,7 @@ public class ConfigForm : Form
         footer.Controls.Add(_versionLabel);
         footer.Controls.Add(_feedbackLabel);
         footer.Controls.Add(_statusLabel);
+        footer.Controls.Add(_settingsFileBtn);
         footer.Controls.Add(_cancelBtn);
         footer.Controls.Add(_applyBtn);
         _footer = footer;
@@ -1225,6 +1237,18 @@ public class ConfigForm : Form
         bool feedback = !string.IsNullOrEmpty(_feedbackLabel.Text);
         _feedbackLabel.Visible = room && feedback;
         _versionLabel.Visible = room && !feedback;
+    }
+
+    private void OpenSettingsLocation()
+    {
+        FlushPendingEdits();
+        if (HasUnsavedChanges) return;
+
+        if (!AppPaths.TryOpenSettingsLocation(out string error))
+        {
+            _feedbackLabel.ForeColor = UiTheme.Danger;
+            _feedbackLabel.Text = error;
+        }
     }
 
     private Control BuildUndoBar()
@@ -2115,7 +2139,9 @@ public class ConfigForm : Form
         _undoPanel.Visible = show;
         if (show)
         {
-            _undoLabel.Text = $"Reverting in {LayoutSafety.RemainingSeconds}s unless you keep this layout.";
+            _undoLabel.Text = LayoutSafety.RevertsUnlessKept
+                ? $"Reverting in {LayoutSafety.RemainingSeconds}s unless you keep this layout."
+                : $"Switched. You can undo for {LayoutSafety.RemainingSeconds}s.";
         }
     }
 
