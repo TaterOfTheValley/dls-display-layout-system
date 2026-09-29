@@ -27,7 +27,7 @@ public class TrayContext : ApplicationContext
 
     private const int MaxHotkeyRecoveryAttempts = 3;
 
-    public TrayContext()
+    public TrayContext(bool showEditorOnLaunch = true)
     {
         // Keep a UI-thread handle alive even after the editor is closed. SystemEvents
         // callbacks arrive off-thread, and must be marshalled before touching the
@@ -120,7 +120,7 @@ public class TrayContext : ApplicationContext
         {
             if (_notifyIcon.Visible) BeginInvokeOnUi(RefreshMenuAndHotkeys);
         };
-        ShowConfigWindow();
+        if (showEditorOnLaunch) ShowConfigWindow();
     }
 
     private void BeginInvokeOnUi(Action action)
@@ -376,12 +376,17 @@ public class TrayContext : ApplicationContext
         {
             Text = "Start with Windows",
             Checked = startup == StartupRegistration.State.On,
-            Detail = startup == StartupRegistration.State.BlockedByWindows ? "blocked in Task Manager" : null,
-            // A Task Manager "Disable" can only be undone in Task Manager — rewriting
+            Detail = startup == StartupRegistration.State.BlockedByWindows ? "disabled in Windows" : null,
+            // A Windows "Disable" can only be undone in Windows — rewriting
             // the Run key would leave the tick on while Windows still refused to start
             // the app, which is worse than not offering the toggle.
             Enabled = startup != StartupRegistration.State.BlockedByWindows,
             Invoke = ToggleStartup
+        });
+        entries.Add(new TrayPopup.CommandEntry
+        {
+            Text = "Manage startup in Windows…",
+            Invoke = OpenWindowsStartupSettings
         });
 
         entries.Add(new TrayPopup.CommandEntry { Text = "Exit", Invoke = ExitThread });
@@ -507,6 +512,22 @@ public class TrayContext : ApplicationContext
             wanted ? "Will start with Windows." : "Will no longer start with Windows.", ToolTipIcon.Info);
     }
 
+    private void OpenWindowsStartupSettings()
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:startupapps")
+            {
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            _notifyIcon.ShowBalloonTip(4000, AppInfo.Name + " — Failed",
+                $"Could not open Windows startup settings: {ex.Message}", ToolTipIcon.Error);
+        }
+    }
+
     private void UndoLastSwitch()
     {
         bool ok = LayoutSafety.Undo(out string msg);
@@ -569,6 +590,7 @@ public class TrayContext : ApplicationContext
             Checked = StartupRegistration.IsEnabled,
             Invoke = () => { }
         });
+        entries.Add(new TrayPopup.CommandEntry { Text = "Manage startup in Windows…", Invoke = () => { } });
         entries.Add(new TrayPopup.CommandEntry { Text = "Exit", Invoke = () => { } });
         return entries;
     }

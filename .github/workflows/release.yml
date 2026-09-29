@@ -143,6 +143,7 @@ jobs:
             --packVersion "$VERSION" \
             --packDir publish/self-contained \
             --mainExe DLS.exe \
+            --icon src/Assets/dls.ico \
             --runtime win-x64 \
             --noPortable true \
             --releaseNotes release-notes.md \

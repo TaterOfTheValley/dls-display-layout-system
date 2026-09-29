@@ -410,6 +410,8 @@ internal static class Program
             StartupRegistration.Reconcile();
         }
 
-        Application.Run(new TrayContext());
+        bool startedWithWindows = args.Length == 1 &&
+            args[0].Equals("--startup", StringComparison.OrdinalIgnoreCase);
+        Application.Run(new TrayContext(showEditorOnLaunch: !startedWithWindows));
     }
 }

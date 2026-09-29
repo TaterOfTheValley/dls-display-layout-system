@@ -32,13 +32,14 @@ internal static class StartupRegistration
         BlockedByWindows
     }
 
-    /// <summary>Full path of the running executable, quoted for the Run key.</summary>
+    /// <summary>Full path and tray-only switch for the Run key. A normal launch
+    /// still opens the editor; signing in should only start the tray utility.</summary>
     private static string CommandLine
     {
         get
         {
             string path = Environment.ProcessPath ?? Application.ExecutablePath;
-            return $"\"{path}\"";
+            return $"\"{path}\" --startup";
         }
     }
 
@@ -162,7 +163,9 @@ internal static class StartupRegistration
             using var run = Registry.CurrentUser.OpenSubKey(RunKey, writable: true);
             if (run == null) return;
 
-            if (run.GetValue(AppInfo.StartupValueName) is string value && PathMatches(value)) return;
+            // Upgrade the old path-only entry as well as repairing a moved EXE.
+            if (run.GetValue(AppInfo.StartupValueName) is string value &&
+                string.Equals(value, CommandLine, StringComparison.OrdinalIgnoreCase)) return;
 
             run.SetValue(AppInfo.StartupValueName, CommandLine, RegistryValueKind.String);
         }
@@ -175,7 +178,26 @@ internal static class StartupRegistration
     private static bool PathMatches(string registryValue)
     {
         string current = Environment.ProcessPath ?? Application.ExecutablePath;
-        string stored = registryValue.Trim().Trim('"');
+        string command = registryValue.Trim();
+        string stored;
+        string arguments;
+        if (command.StartsWith('"'))
+        {
+            int closingQuote = command.IndexOf('"', 1);
+            if (closingQuote < 0) return false;
+            stored = command[1..closingQuote];
+            arguments = command[(closingQuote + 1)..].Trim();
+        }
+        else
+        {
+            // Old entries were quoted too; this accepts a path with no spaces if
+            // it was registered by another copy of DLS.
+            stored = command;
+            arguments = string.Empty;
+        }
+
+        if (arguments.Length > 0 &&
+            !arguments.Equals("--startup", StringComparison.OrdinalIgnoreCase)) return false;
         return string.Equals(
             Path.GetFullPath(stored), Path.GetFullPath(current), StringComparison.OrdinalIgnoreCase);
     }
