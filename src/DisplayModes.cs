@@ -24,10 +24,15 @@ internal static class DisplayModes
     private const int ENUM_CURRENT_SETTINGS = -1;
 
     private static readonly Dictionary<string, List<Mode>> Cache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly object CacheLock = new();
 
     /// <summary>Drops the cache. Called when the hardware set changes, since a monitor
-    /// that was just enabled can now report its real mode list.</summary>
-    public static void Invalidate() => Cache.Clear();
+    /// that was just enabled can now report its real mode list. Display change events
+    /// arrive off the UI thread, so invalidation and enumeration share one lock.</summary>
+    public static void Invalidate()
+    {
+        lock (CacheLock) Cache.Clear();
+    }
 
     /// <summary>
     /// Every mode this monitor can run, best-effort. <paramref name="gdiDeviceName"/>
@@ -93,27 +98,30 @@ internal static class DisplayModes
 
     private static List<Mode> Enumerate(string gdiDeviceName)
     {
-        if (Cache.TryGetValue(gdiDeviceName, out var cached)) return cached;
-
-        var found = new List<Mode>();
-        try
+        lock (CacheLock)
         {
-            var dm = new DEVMODE { dmSize = (ushort)Marshal.SizeOf<DEVMODE>() };
-            for (int i = 0; EnumDisplaySettings(gdiDeviceName, i, ref dm); i++)
+            if (Cache.TryGetValue(gdiDeviceName, out var cached)) return cached;
+
+            var found = new List<Mode>();
+            try
             {
-                // 32-bit colour only: the same resolution repeated at lower bit depths
-                // is noise in a dropdown, and nothing here would ever pick one.
-                if (dm.dmBitsPerPel != 32) continue;
-                found.Add(new Mode((int)dm.dmPelsWidth, (int)dm.dmPelsHeight, (int)dm.dmDisplayFrequency));
+                var dm = new DEVMODE { dmSize = (ushort)Marshal.SizeOf<DEVMODE>() };
+                for (int i = 0; EnumDisplaySettings(gdiDeviceName, i, ref dm); i++)
+                {
+                    // 32-bit colour only: the same resolution repeated at lower bit depths
+                    // is noise in a dropdown, and nothing here would ever pick one.
+                    if (dm.dmBitsPerPel != 32) continue;
+                    found.Add(new Mode((int)dm.dmPelsWidth, (int)dm.dmPelsHeight, (int)dm.dmDisplayFrequency));
+                }
             }
-        }
-        catch
-        {
-            // Enumeration is a convenience; a failure just means a synthesised list.
-        }
+            catch
+            {
+                // Enumeration is a convenience; a failure just means a synthesised list.
+            }
 
-        Cache[gdiDeviceName] = found;
-        return found;
+            Cache[gdiDeviceName] = found;
+            return found;
+        }
     }
 
     /// <summary>

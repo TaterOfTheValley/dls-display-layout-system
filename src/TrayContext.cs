@@ -66,6 +66,7 @@ public class TrayContext : ApplicationContext
         };
         _profileWatcher.Changed += ProfileFileChanged;
         _profileWatcher.Created += ProfileFileChanged;
+        _profileWatcher.Deleted += ProfileFileChanged;
         _profileWatcher.Renamed += ProfileFileChanged;
 
         _profileReloadTimer = new System.Windows.Forms.Timer { Interval = 400 };
@@ -157,11 +158,15 @@ public class TrayContext : ApplicationContext
     {
         if (_reloadingProfiles) return;
         string signature = GetProfileSignature();
-        if (string.IsNullOrEmpty(signature) || signature == _lastHandledProfileSignature) return;
+        if (signature == _lastHandledProfileSignature) return;
 
         _reloadingProfiles = true;
         var loaded = ProfileManager.LoadProfiles();
-        if (loaded.Count == 0)
+        // An empty layout list is a valid saved configuration (for example, after
+        // deleting the last layout). Only preserve the live list when the file itself
+        // could not be read.
+        if (ProfileManager.LastNotice?.StartsWith(
+                "Your settings could not be read", StringComparison.Ordinal) == true)
         {
             _reloadingProfiles = false;
             return;
@@ -339,6 +344,7 @@ public class TrayContext : ApplicationContext
         }
 
         entries.Add(new TrayPopup.CommandEntry { Text = "Edit layouts\u2026", Invoke = ShowConfigWindow });
+        entries.Add(new TrayPopup.CommandEntry { Text = "Open settings file", Invoke = OpenSettingsLocation });
         entries.Add(new TrayPopup.SeparatorEntry());
 
         if (_availableUpdate != null)
@@ -548,6 +554,7 @@ public class TrayContext : ApplicationContext
         entries.Add(new TrayPopup.SeparatorEntry());
         entries.Add(new TrayPopup.CommandEntry { Text = "Undo last switch", Detail = "18s", Emphasis = true, Invoke = () => { } });
         entries.Add(new TrayPopup.CommandEntry { Text = "Save current arrangement as a layout", Invoke = () => { } });
+        entries.Add(new TrayPopup.CommandEntry { Text = "Open settings file", Invoke = () => { } });
         entries.Add(new TrayPopup.CommandEntry { Text = "Edit layouts\u2026", Invoke = () => { } });
         entries.Add(new TrayPopup.SeparatorEntry());
         entries.Add(new TrayPopup.CommandEntry { Text = "Check for updates\u2026", Detail = AppInfo.Version, Invoke = () => { } });
@@ -606,6 +613,25 @@ public class TrayContext : ApplicationContext
 
         _configForm.Show();
         _configForm.BringToFront();
+    }
+
+    private void OpenSettingsLocation()
+    {
+        if (_configForm is { IsDisposed: false })
+        {
+            _configForm.FlushPendingEdits();
+            if (_configForm.HasUnsavedChanges)
+            {
+                MessageBox.Show("DLS could not save your layout edits. Resolve the save error before opening the settings file.",
+                    "DLS settings", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+        }
+
+        if (!AppPaths.TryOpenSettingsLocation(out string error))
+        {
+            MessageBox.Show(error, "DLS settings", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     private void OnDisplaySettingsChanged(object? sender, EventArgs e)

@@ -127,8 +127,19 @@ That is deliberate, and it is the opposite of a normal confirmation dialog. The
 way a display switch fails is that the monitor you would click on is now black —
 so recovery has to be the thing that needs no input.
 
-Switching from the command line with `--apply` skips the prompt; nothing
-auto-reverts there.
+**Layouts you have already kept do not ask again.** Once you click *Keep this
+layout* on a layout, switching to that same result later goes straight through:
+it can still be undone for 20 seconds, but nothing waits on you. A layout that
+is new, or that you have edited since, asks as before — so does a saved layout
+that did not come out as saved (a monitor that failed to turn on). "The same
+result" means the same monitors, positions, resolutions, refresh rates and
+scaling *and* the same set of monitors plugged in, so a docked layout you have
+only ever kept on the dock asks once when you first use it undocked. Renaming a
+layout does not reset it. What has been kept is remembered in
+`trusted-layouts.json` beside the settings file; delete it to be asked again.
+
+Switching from the command line skips the prompt entirely; nothing auto-reverts
+there.
 
 ## Resolution, refresh rate and scaling
 
@@ -209,7 +220,44 @@ an open editor rebuilds at the new size.
 
 ## Command line
 
-The app is a GUI executable, so it attaches to the calling console. Add
+```
+DLS.exe list                                   saved layouts; * marks the active one
+DLS.exe apply "Main monitor only"              switch to a saved layout, no prompt
+DLS.exe schedule add "Main monitor only" --at 22:30 --days weekdays
+DLS.exe schedule list
+DLS.exe schedule remove "Main monitor only at 22:30"
+```
+
+Exit codes: `0` done, `1` failed, `2` bad usage, `3` no such layout. `apply` on a
+layout that is already active does nothing and succeeds. A name that matches no
+layout is an error rather than falling back to some other layout, so a renamed
+layout cannot make an unattended job switch your screens to the wrong thing.
+
+The app is a GUI program, so a terminal returns to its prompt without waiting for
+it. To wait and read the exit code from PowerShell:
+`Start-Process -Wait -PassThru DLS.exe -ArgumentList 'apply','Main monitor only'`
+(quote a name with spaces inside the string in Windows PowerShell 5.1).
+`--log` also appends the result to `dls.log` beside the settings file, and
+`--quiet` opens no console window at all, which is what a scheduled run wants.
+
+### Scheduling a switch
+
+`schedule add` creates a Windows Task Scheduler task under a `DLS` folder that runs
+`DLS.exe apply "<layout>" --quiet --log`. `--at` takes `22:30` or `10:30pm`;
+`--days` takes `daily` (the default), `weekdays`, `weekends`, or a list like
+`mon,wed,fri`. `--name` sets the task's name, and adding a task with the same name
+replaces it.
+
+A scheduled switch runs **only if the computer is on and you are signed in at that
+time** — a missed run is skipped, not made up later — and it never asks for
+confirmation, since nothing is there to answer. It also runs on battery. Because a
+task finds its layout by name, renaming the layout means updating the schedule; a run that cannot find the
+layout is recorded in `dls.log` and leaves your screens alone. You can also see and
+edit the tasks in Task Scheduler itself.
+
+### Diagnostics
+
+The older switches below are for debugging. The app attaches to the calling console. Add
 `--out <file>` to any of these to also write the output to a file.
 
 | Command | What it does |
@@ -219,7 +267,7 @@ The app is a GUI executable, so it attaches to the calling console. Add
 | `--list-profiles` | Lists saved layouts and the monitors in each. |
 | `--capture "<name>"` | Saves the current arrangement under that name. |
 | `--test-apply "<name>"` | Validates a layout without changing anything. |
-| `--apply "<name>"` | Applies a layout. No confirmation prompt. |
+| `--apply "<name>"` | Applies a layout. No confirmation prompt. Prefer `apply` above: this one falls back to the first layout if the name is not found. |
 | `--set-refresh <hz>` | Sets the primary display's refresh rate through the real apply path, and reports the result. |
 | `--set-scale <percent>` | Sets the primary display's scaling and reports what actually changed. |
 | `--screenshot-menu <file>` | Renders the tray menu to a PNG. Useful for checking it at your display scaling. |

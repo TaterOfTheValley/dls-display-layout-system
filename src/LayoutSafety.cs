@@ -8,9 +8,13 @@ namespace DLS;
 /// just turned off, unable to reach any button — so confirmation has to be the
 /// action that requires input, not the recovery.
 ///
-/// A non-interactive apply (the CLI, a hotkey handler with no message loop) keeps
-/// the old opt-in behaviour: the snapshot is retained and Undo stays available for
-/// <see cref="UndoSeconds"/>, but nothing reverts on its own.
+/// A non-interactive apply (the CLI, a scheduled task) keeps the old opt-in behaviour:
+/// the snapshot is retained and Undo stays available for <see cref="UndoSeconds"/>,
+/// but nothing reverts on its own.
+///
+/// The prompt is also skipped for a layout the user has already kept once (see
+/// <see cref="TrustedLayouts"/>). The switch can still be undone for
+/// <see cref="UndoSeconds"/>; it just does not demand an answer.
 /// </summary>
 internal static class LayoutSafety
 {
@@ -18,10 +22,17 @@ internal static class LayoutSafety
 
     private static DisplayProfile? _snapshot;
     private static DateTime _expiresUtc;
+    private static string? _pendingTrustKey;
+    private static bool _revertsUnlessKept;
 
     public static event EventHandler? UndoStateChanged;
 
     public static bool CanUndo => _snapshot != null && DateTime.UtcNow < _expiresUtc;
+
+    /// <summary>True while a keep-or-revert prompt is pending, i.e. the previous layout
+    /// comes back on its own unless the user says otherwise. False for a switch to an
+    /// already-kept layout or a non-interactive one, where Undo is only offered.</summary>
+    public static bool RevertsUnlessKept => CanUndo && _revertsUnlessKept;
 
     public static int RemainingSeconds =>
         CanUndo ? Math.Max(0, (int)Math.Ceiling((_expiresUtc - DateTime.UtcNow).TotalSeconds)) : 0;
@@ -36,6 +47,7 @@ internal static class LayoutSafety
         // also records which monitor was primary, which is what tells us afterwards
         // whether the app's own windows need to follow.
         var snapshot = DisplayEngine.CaptureCurrentLayoutAsProfile("Previous layout", string.Empty);
+        string trustKey = TrustedLayouts.KeyFor(profile, DisplayEngine.GetCurrentDisplays());
         string previousPrimary = WindowFollow.PrimaryIdentityOf(snapshot);
 
         // A pending prompt from an earlier switch is now stale — its snapshot
@@ -52,6 +64,8 @@ internal static class LayoutSafety
 
         _snapshot = snapshot;
         _expiresUtc = DateTime.UtcNow.AddSeconds(UndoSeconds);
+        _pendingTrustKey = trustKey;
+        _revertsUnlessKept = false;
 
         // If this switch promoted a different panel to primary, the editor must not be
         // left behind on the old one — it is holding the undo for a change the user
@@ -63,9 +77,15 @@ internal static class LayoutSafety
             ? $"Applied '{profile.Name}'."
             : $"Applied '{profile.Name}', but {verify.Summary}.";
 
+        // Skip the prompt only when nothing looks off: a kept layout that did not come
+        // out as saved (a monitor that failed to wake, say) is exactly the case the
+        // prompt is for.
+        bool needsAnswer = interactive && !(verify.Matched && TrustedLayouts.IsTrusted(trustKey));
+        _revertsUnlessKept = needsAnswer;
+
         UndoStateChanged?.Invoke(null, EventArgs.Empty);
 
-        if (interactive)
+        if (needsAnswer)
         {
             KeepLayoutDialog.Show(
                 profile.Name,
@@ -85,6 +105,11 @@ internal static class LayoutSafety
     public static void Confirm()
     {
         if (_snapshot == null) return;
+
+        // Keeping it is what earns the layout its pass on future switches.
+        if (_pendingTrustKey != null) TrustedLayouts.Remember(_pendingTrustKey);
+
+        _pendingTrustKey = null;
         _snapshot = null;
         _expiresUtc = DateTime.MinValue;
         UndoStateChanged?.Invoke(null, EventArgs.Empty);
@@ -105,6 +130,7 @@ internal static class LayoutSafety
         // useful to retry — re-applying a layout that was just rejected only
         // produces the same error, and leaving Undo enabled invites a loop.
         _snapshot = null;
+        _pendingTrustKey = null;
         _expiresUtc = DateTime.MinValue;
 
         KeepLayoutDialog.Dismiss();
