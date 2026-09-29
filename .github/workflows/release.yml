@@ -1,17 +1,29 @@
 name: Release
 
+# Every change to master cuts a release: the workflow bumps the patch number of the
+# newest v* tag and tags the commit itself. Pushing a v* tag by hand still works and
+# is how you start a new minor or major (or drop the pre-release suffix) — that tag
+# is used as-is.
 on:
   push:
+    branches: [master]
     tags: ['v*']
 
 permissions:
   contents: write
+
+# Releases are numbered from the existing tags, so two runs must never overlap.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need every tag to pick the next version
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -20,22 +32,61 @@ jobs:
       # The tag is the single source of truth for the version. DLS.csproj carries a
       # default for local builds; every number below overrides it.
       #
+      # On a master push there is no tag yet, so the next one is the newest tag with
+      # its patch number bumped and its pre-release suffix kept (v0.7.0-alpha ->
+      # v0.7.1-alpha). versionsort.suffix makes v1.0.0-alpha sort before v1.0.0.
+      #
       # AssemblyVersion and FileVersion must be strictly numeric — the CLR and the
       # Win32 version resource both reject a "-alpha" suffix — so they get the tag
       # with any pre-release tail stripped. Version keeps the full string and
       # becomes InformationalVersion, which is what AppInfo.Version reads.
-      - name: Derive version from tag
+      - name: Derive version
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
+          TAGS=$(git -c versionsort.suffix=- tag --list 'v*' --sort=-v:refname)
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            TAG="$GITHUB_REF_NAME"
+          else
+            LATEST=$(sed -n 1p <<< "$TAGS")
+            if [[ -z "$LATEST" ]]; then
+              echo "::error::No v* tag to bump from; push an initial tag by hand" >&2
+              exit 1
+            fi
+            BASE="${LATEST#v}"
+            NUM="${BASE%%-*}"
+            SUFFIX="${BASE#"$NUM"}"
+            IFS=. read -r MAJOR MINOR PATCH <<< "$NUM"
+            TAG="v$MAJOR.$MINOR.$((PATCH + 1))$SUFFIX"
+          fi
+          VERSION="${TAG#v}"
           NUMERIC="${VERSION%%-*}"
           if [[ ! "$NUMERIC" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Tag '$GITHUB_REF_NAME' is not vMAJOR.MINOR.PATCH[-prerelease]" >&2
+            echo "::error::Tag '$TAG' is not vMAJOR.MINOR.PATCH[-prerelease]" >&2
             exit 1
           fi
-          echo "VERSION=$VERSION"          >> "$GITHUB_ENV"
-          echo "NUMERIC=$NUMERIC.0"        >> "$GITHUB_ENV"
+          PREV=$(grep -vxF "$TAG" <<< "$TAGS" | sed -n 1p || true)
+          echo "Releasing $TAG (previous: ${PREV:-none})"
+          {
+            echo "TAG=$TAG"
+            echo "PREV_TAG=$PREV"
+            echo "VERSION=$VERSION"
+            echo "NUMERIC=$NUMERIC.0"
+          } >> "$GITHUB_ENV"
+
+      # Notes come from the PRs merged since the previous release. They are written to
+      # a file first because the same text goes into the Velopack package (shown in
+      # the in-app update dialog) and onto the GitHub release page.
+      - name: Generate release notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ARGS=(-f tag_name="$TAG" -f target_commitish="$GITHUB_SHA")
+          if [[ -n "$PREV_TAG" ]]; then ARGS+=(-f previous_tag_name="$PREV_TAG"); fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" "${ARGS[@]}"             --jq .body > release-notes.md
+          cat release-notes.md
 
       - name: Publish (self-contained)
         run: >
@@ -94,8 +145,16 @@ jobs:
             --mainExe DLS.exe \
             --runtime win-x64 \
             --noPortable true \
-            --releaseNotes RELEASE_NOTES.md \
+            --releaseNotes release-notes.md \
             --outputDir publish/velopack
+
+      # Tag only after everything above built, so a failed build never leaves a tag
+      # behind for the next run to count from. Tags pushed with the workflow token do
+      # not start another workflow run.
+      - name: Tag master
+        if: github.ref_type != 'tag'
+        run: git push origin "$GITHUB_SHA:refs/tags/$TAG"
+        shell: bash
 
       # One release contains the installer, Velopack update packages, and both
       # standalone downloads. The workflow's token can publish to this repository.
@@ -111,8 +170,8 @@ jobs:
           publish/tools/vpk.exe upload github \
             --repoUrl "https://github.com/$GITHUB_REPOSITORY" \
             --outputDir publish/velopack \
-            --tag "$GITHUB_REF_NAME" \
-            --releaseName "DLS - Display Layout System $GITHUB_REF_NAME" \
+            --tag "$TAG" \
+            --releaseName "DLS - Display Layout System $TAG" \
             --publish --merge "${PRERELEASE[@]}"
-          gh release edit "$GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md
-          gh release upload "$GITHUB_REF_NAME" assets/* --clobber
+          gh release edit "$TAG" --notes-file release-notes.md
+          gh release upload "$TAG" assets/* --clobber
