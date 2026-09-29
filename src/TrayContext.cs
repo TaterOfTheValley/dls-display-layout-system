@@ -94,6 +94,10 @@ public class TrayContext : ApplicationContext
         RefreshMenuAndHotkeys();
         DetectActiveProfile();
 
+        // Layouts saved before "already kept" was remembered are believed if they are
+        // what is on screen right now, rather than each needing one prompt first.
+        TrustedLayouts.SeedFromLive(_profiles);
+
         // The layout can change without this app doing it — Windows display settings,
         // a monitor plugged or unplugged, a driver event. Without this the tray shows
         // a checkmark against a profile that is no longer live.
@@ -521,6 +525,7 @@ public class TrayContext : ApplicationContext
     private void CaptureCurrentLayout()
     {
         var created = DisplayEngine.CaptureCurrentLayoutAsProfile($"Layout {_profiles.Count + 1}", string.Empty);
+        TrustedLayouts.RememberLive(created);
         _profiles.Add(created);
         if (!ProfileManager.TrySaveProfiles(_profiles, out string saveError))
         {

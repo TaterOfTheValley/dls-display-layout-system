@@ -127,19 +127,25 @@ That is deliberate, and it is the opposite of a normal confirmation dialog. The
 way a display switch fails is that the monitor you would click on is now black —
 so recovery has to be the thing that needs no input.
 
-**Layouts you have already kept do not ask again.** Once you click *Keep this
-layout* on a layout, switching to that same result later goes straight through:
-it can still be undone for 20 seconds, but nothing waits on you. A layout that
-is new, or that you have edited since, asks as before — so does a saved layout
-that did not come out as saved (a monitor that failed to turn on). "The same
-result" means the same monitors, positions, resolutions, refresh rates and
-scaling *and* the same set of monitors plugged in, so a docked layout you have
-only ever kept on the dock asks once when you first use it undocked. Renaming a
-layout does not reset it. What has been kept is remembered in
-`trusted-layouts.json` beside the settings file; delete it to be asked again.
+**Only a new layout asks.** A layout you already know works switches straight
+through, with no prompt: it can still be undone for 20 seconds, but nothing waits
+on you. That is one rule for the tray, the editor, hotkeys and the command line.
 
-Switching from the command line skips the prompt entirely; nothing auto-reverts
-there.
+A layout is known to work when it was captured from your screen (whatever is on
+screen works), when you have clicked *Keep this layout* on it, when it was on
+screen at startup, or when the command line applied it and it came out as saved.
+It becomes new again the moment you edit it into something that has not been on
+screen — move a monitor, change a resolution, refresh rate or scale. A known
+layout that does not come out as saved (a monitor that failed to turn on) asks
+too. Renaming a layout does not make it new. Plugging in a different set of
+monitors does, because the same layout is a different experiment on different
+hardware.
+
+What is known is remembered in `trusted-layouts.json` beside the settings file;
+delete it and layouts are asked about again as they come up.
+
+The command line follows the same rule but has no one to ask: it switches to a new
+layout without a prompt, and nothing auto-reverts there.
 
 ## Resolution, refresh rate and scaling
 
