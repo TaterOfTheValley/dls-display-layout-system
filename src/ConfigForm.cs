@@ -1882,7 +1882,7 @@ public class ConfigForm : Form
     private void StartHotkeyCapture()
     {
         _isCapturingHotkey = true;
-        _hotkeyHint.Text = "Listening… press a key combination (Ctrl, Alt, Shift, Win + key), or Esc to cancel";
+        _hotkeyHint.Text = "Listening… press a key combination (Ctrl, Alt, Shift + key), Backspace to clear, or Esc to cancel";
         _hotkeyHint.ForeColor = UiTheme.Gold;
         _captureHotkeyBtn.Text = "Cancel";
     }
@@ -1911,27 +1911,58 @@ public class ConfigForm : Form
         if (!_isCapturingHotkey) return;
         if (e.KeyCode is Keys.ControlKey or Keys.Menu or Keys.ShiftKey or Keys.LWin or Keys.RWin) return;
 
+        e.SuppressKeyPress = true;
+
+        // Backspace or Delete on its own removes the shortcut. There was no other way
+        // to: they used to be recorded as the shortcut, which registered Backspace as a
+        // global hotkey.
+        if (e.KeyCode is Keys.Back or Keys.Delete && !e.Control && !e.Alt && !e.Shift)
+        {
+            SetSelectedHotkey(string.Empty);
+            EndHotkeyCapture();
+            _hotkeyHint.ForeColor = UiTheme.Ok;
+            _hotkeyHint.Text = "Shortcut cleared.";
+            return;
+        }
+
         var parts = new List<string>();
         if (e.Control) parts.Add("Ctrl");
         if (e.Alt) parts.Add("Alt");
         if (e.Shift) parts.Add("Shift");
-        if (e.KeyCode is Keys.LWin or Keys.RWin) parts.Add("Win");
         parts.Add(e.KeyCode.ToString());
-
         string captured = string.Join(" + ", parts);
-        _hotkeyTextBox.Text = captured;
-        if (_selectedProfile != null)
+
+        // A shortcut Windows would take from the whole machine is refused here rather
+        // than stored: Caps Lock or a bare letter, registered globally, stops that key
+        // working in every program. Listening carries on so the next try is one key away.
+        string? problem = Hotkeys.Problem(captured);
+        var owner = problem == null && _selectedProfile != null
+            ? Hotkeys.OwnerOf(captured, _profiles.Where(p => p != _selectedProfile))
+            : null;
+        if (problem != null || owner != null)
         {
-            _selectedProfile.Hotkey = captured;
-            UpdateSelectedCardHotkey(captured);
-            MarkDirty();
+            _hotkeyHint.ForeColor = UiTheme.Danger;
+            _hotkeyHint.Text = owner != null
+                ? $"{captured} is already used by '{owner.Name}'. Press another combination, or Esc to cancel."
+                : $"Can't use that — {problem}. Press another combination, or Esc to cancel.";
+            return;
         }
 
+        SetSelectedHotkey(captured);
         _isCapturingHotkey = false;
         _hotkeyHint.Text = $"Captured shortcut: {captured}";
         _hotkeyHint.ForeColor = UiTheme.Ok;
         _captureHotkeyBtn.Text = "Record";
-        e.SuppressKeyPress = true;
+    }
+
+    private void SetSelectedHotkey(string hotkey)
+    {
+        _hotkeyTextBox.Text = hotkey;
+        if (_selectedProfile == null || _selectedProfile.Hotkey == hotkey) return;
+
+        _selectedProfile.Hotkey = hotkey;
+        UpdateSelectedCardHotkey(hotkey);
+        MarkDirty();
     }
 
     private void AddProfileBtn_Click(object? sender, EventArgs e)
@@ -2018,6 +2049,17 @@ public class ConfigForm : Form
     {
         if (!_dirty) return true;
 
+        // Nothing unusable is stored: recording already refuses these, so this only
+        // catches what got into the draft some other way.
+        var removed = Hotkeys.Clean(_profiles);
+        if (removed.Count > 0)
+        {
+            _hotkeyTextBox.Text = _selectedProfile?.Hotkey ?? string.Empty;
+            InvalidateProfileCards();
+            _feedbackLabel.ForeColor = UiTheme.Gold;
+            _feedbackLabel.Text = string.Join(" ", removed);
+        }
+
         if (!ProfileManager.TrySaveProfiles(_profiles, out string error))
         {
             _feedbackLabel.ForeColor = UiTheme.Danger;
@@ -2032,8 +2074,11 @@ public class ConfigForm : Form
         _onSaveCallback?.Invoke();
         MarkClean();
 
-        _feedbackLabel.ForeColor = UiTheme.Ok;
-        _feedbackLabel.Text = "Saved.";
+        if (removed.Count == 0)
+        {
+            _feedbackLabel.ForeColor = UiTheme.Ok;
+            _feedbackLabel.Text = "Saved.";
+        }
         return true;
     }
 

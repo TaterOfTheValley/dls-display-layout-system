@@ -25,6 +25,9 @@ public class TrayContext : ApplicationContext
     private bool _reloadingProfiles;
     private int _hotkeyRecoveryAttempt;
 
+    /// <summary>The layouts whose shortcut Windows refused at the last registration.</summary>
+    private readonly List<string> _unregisteredHotkeys = new();
+
     private const int MaxHotkeyRecoveryAttempts = 3;
 
     public TrayContext(bool showEditorOnLaunch = true)
@@ -206,15 +209,20 @@ public class TrayContext : ApplicationContext
     private bool RegisterHotkeys()
     {
         _hotkeyManager.UnregisterAll();
-        bool allRegistered = true;
+        _unregisteredHotkeys.Clear();
         foreach (var profile in _profiles)
         {
             var p = profile;
             if (p.NeedsRecapture || string.IsNullOrWhiteSpace(p.Hotkey)) continue;
+
+            // A shortcut that is not usable is skipped, not retried: waiting will not
+            // make Caps Lock a valid hotkey, and the settings load removes it anyway.
+            if (Hotkeys.Problem(p.Hotkey) != null) continue;
+
             if (!_hotkeyManager.Register(p.Hotkey, () => SwitchToProfile(p)))
-                allRegistered = false;
+                _unregisteredHotkeys.Add($"'{p.Name}' ({p.Hotkey})");
         }
-        return allRegistered;
+        return _unregisteredHotkeys.Count == 0;
     }
 
     private void RefreshHotkeys()
@@ -248,7 +256,16 @@ public class TrayContext : ApplicationContext
         }
 
         _hotkeyRecoveryAttempt++;
-        if (_hotkeyRecoveryAttempt >= MaxHotkeyRecoveryAttempts) return;
+        if (_hotkeyRecoveryAttempt >= MaxHotkeyRecoveryAttempts)
+        {
+            // Out of retries: another program owns the key. Saying nothing leaves a
+            // shortcut that looks set and never fires.
+            _notifyIcon.ShowBalloonTip(6000, AppInfo.Name,
+                $"Could not register the shortcut for {string.Join(", ", _unregisteredHotkeys)}. " +
+                "Another program may be using it — pick a different one in the editor.",
+                ToolTipIcon.Warning);
+            return;
+        }
 
         _hotkeyRecoveryTimer.Interval = _hotkeyRecoveryAttempt == 1 ? 1500 : 4000;
         _hotkeyRecoveryTimer.Start();
