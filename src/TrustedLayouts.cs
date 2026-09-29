@@ -21,7 +21,7 @@ namespace DLS;
 ///
 /// Kept in its own file beside the settings rather than inside them. It is derived
 /// state with no reason to travel with a copied settings file, and keeping it out of
-/// the layouts leaves the settings format, the editor's autosave and the file watcher
+/// the layouts leaves the settings format, the editor's saving and the file watcher
 /// alone.
 /// </summary>
 internal static class TrustedLayouts

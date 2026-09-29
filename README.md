@@ -109,15 +109,24 @@ the one you want from its shape faster than from its name. Select one and the
 canvas below shows that arrangement; drag monitors to rearrange, drag one off the
 canvas to turn it off.
 
-Edits save themselves. There is no Save button, and the only commit action is
-**Apply layout**, which switches Windows to what you are looking at.
+Edits are held until you press **Save**. **Cancel** (the Close button while there is
+nothing to lose) throws them away, and closing the window with edits pending asks
+first. **Apply layout** saves and then switches Windows to what you are looking at.
+
+Drag a layout along the strip to reorder it — the order is the one the tray menu
+and `Ctrl` + `1`…`9` use. **Delete** asks before it removes a layout.
+
+While recording a shortcut, **Cancel**, `Esc`, or clicking anywhere else stops
+listening without changing it.
 
 | Key | Does |
 |---|---|
 | `Ctrl` + `1`…`9` | Switch to that layout |
+| `Ctrl` + `S` | Save your edits |
 | `Ctrl` + `Enter` | Apply the selected layout |
 | `Ctrl` + `N` | New layout |
 | `Ctrl` + `Z` | Undo the last switch |
+| `Alt` + `←` / `→` | Move the selected layout along the strip |
 | `Esc` | Close (or stop recording a shortcut) |
 | Arrow keys | Nudge the selected monitor |
 

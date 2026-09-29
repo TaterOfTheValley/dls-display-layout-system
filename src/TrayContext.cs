@@ -176,20 +176,8 @@ public class TrayContext : ApplicationContext
             return;
         }
 
-        // Edits save themselves, so "unsaved editor changes" now only means edits
-        // still inside the debounce window. Write them out and re-check rather than
-        // interrupting with a dialog — if that write is what the watcher saw, there
-        // is nothing to reload at all.
-        if (_configForm is { IsDisposed: false } && _configForm.HasUnsavedChanges)
-        {
-            _configForm.FlushPendingEdits();
-            if (GetProfileSignature() == _lastHandledProfileSignature)
-            {
-                _reloadingProfiles = false;
-                return;
-            }
-        }
-
+        // The editor works on its own copy, so a reload never disturbs edits in
+        // progress — it decides for itself what to do about them.
         _profiles.Clear();
         _profiles.AddRange(loaded);
         _configForm?.ReloadProfilesFromDisk(_profiles);
@@ -211,9 +199,9 @@ public class TrayContext : ApplicationContext
 
     /// <summary>
     /// Re-registers global hotkeys. Split out from the menu rebuild because it needs
-    /// no display query: an editor autosave has to refresh hotkeys, and doing it
+    /// no display query: an editor save has to refresh hotkeys, and doing it
     /// through the full menu rebuild meant enumerating every display path each time
-    /// the user paused typing.
+    /// the user saved.
     /// </summary>
     private bool RegisterHotkeys()
     {
@@ -389,7 +377,7 @@ public class TrayContext : ApplicationContext
             Invoke = OpenWindowsStartupSettings
         });
 
-        entries.Add(new TrayPopup.CommandEntry { Text = "Exit", Invoke = ExitThread });
+        entries.Add(new TrayPopup.CommandEntry { Text = "Exit", Invoke = ExitApp });
 
         _entries = entries;
     }
@@ -481,16 +469,7 @@ public class TrayContext : ApplicationContext
             return false;
         }
 
-        if (_configForm is { IsDisposed: false, HasUnsavedChanges: true })
-        {
-            _configForm.FlushPendingEdits();
-            if (_configForm.HasUnsavedChanges)
-            {
-                MessageBox.Show("DLS could not save your layout edits. Resolve the save error before updating.",
-                    "DLS updates", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return false;
-            }
-        }
+        if (_configForm is { IsDisposed: false } && !_configForm.ResolveUnsavedChanges()) return false;
 
         _updateManager.WaitExitThenApplyUpdates(release);
         ExitThread();
@@ -629,7 +608,7 @@ public class TrayContext : ApplicationContext
     {
         if (_configForm == null || _configForm.IsDisposed)
         {
-            // Called on every autosave, so it stays cheap: hotkeys must follow an
+            // Called on every save, so it stays cheap: hotkeys must follow an
             // edit immediately, but the menu is rebuilt when it opens anyway.
             _configForm = new ConfigForm(_profiles, () =>
             {
@@ -644,17 +623,6 @@ public class TrayContext : ApplicationContext
 
     private void OpenSettingsLocation()
     {
-        if (_configForm is { IsDisposed: false })
-        {
-            _configForm.FlushPendingEdits();
-            if (_configForm.HasUnsavedChanges)
-            {
-                MessageBox.Show("DLS could not save your layout edits. Resolve the save error before opening the settings file.",
-                    "DLS settings", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return;
-            }
-        }
-
         if (!AppPaths.TryOpenSettingsLocation(out string error))
         {
             MessageBox.Show(error, "DLS settings", MessageBoxButtons.OK, MessageBoxIcon.Error);
@@ -670,6 +638,13 @@ public class TrayContext : ApplicationContext
             RefreshMenuAndHotkeys();
             DetectActiveProfile();
         });
+    }
+
+    /// <summary>Quits, unless the editor holds edits the user then decides to keep working on.</summary>
+    private void ExitApp()
+    {
+        if (_configForm is { IsDisposed: false } && !_configForm.ResolveUnsavedChanges()) return;
+        ExitThread();
     }
 
     protected override void ExitThreadCore()
