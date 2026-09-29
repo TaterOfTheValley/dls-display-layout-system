@@ -109,23 +109,41 @@ the one you want from its shape faster than from its name. Select one and the
 canvas below shows that arrangement; drag monitors to rearrange, drag one off the
 canvas to turn it off.
 
-Edits are held until you press **Save**. **Cancel** (the Close button while there is
-nothing to lose) throws them away, and closing the window with edits pending asks
-first. **Apply layout** saves and then switches Windows to what you are looking at.
+Two things can be undone here, and they are kept separate:
+
+- **Your layouts** (what is stored). Edits are held until you press **Save**.
+  **Cancel** puts everything back as last saved and leaves the window open.
+  **Close** closes it, and asks first if edits are pending.
+- **Your screens** (what Windows is doing). **Apply layout** tries the layout on
+  your screens exactly as it is in the editor, saved or not, and then asks you to
+  keep it — doing nothing reverts. `Ctrl` + `Z` (or **Undo layout**) reverts the
+  screens after a switch.
+
+Applying never saves, and reverting the screens never discards your edits: apply an
+edited layout, and if it looks wrong, revert the screens and keep adjusting it (or
+**Cancel** to drop the edits). The footer shows **unsaved** beside the layout's
+status while edits are pending.
 
 Drag a layout along the strip to reorder it — the order is the one the tray menu
 and `Ctrl` + `1`…`9` use. **Delete** asks before it removes a layout.
 
 While recording a shortcut, **Cancel**, `Esc`, or clicking anywhere else stops
-listening without changing it.
+listening without changing it, and `Backspace` or `Delete` removes the shortcut.
+
+A global shortcut takes its key away from every program, so DLS only accepts ones
+that are safe: `Ctrl`, `Alt` or `Win` plus a key, `Shift` plus a function key, or a
+function key from `F13` to `F24` on its own. Caps Lock, Num Lock, Scroll Lock and bare
+letters are refused, and so is a shortcut another layout already uses. If a settings
+file contains one anyway — hand-edited, or from an earlier build — DLS removes it when
+it loads the file, saves the cleaned file, and tells you which layouts lost a shortcut.
 
 | Key | Does |
 |---|---|
 | `Ctrl` + `1`…`9` | Switch to that layout |
 | `Ctrl` + `S` | Save your edits |
-| `Ctrl` + `Enter` | Apply the selected layout |
+| `Ctrl` + `Enter` | Apply the selected layout to your screens |
 | `Ctrl` + `N` | New layout |
-| `Ctrl` + `Z` | Undo the last switch |
+| `Ctrl` + `Z` | Undo the last switch (restores your screens, not your edits) |
 | `Alt` + `←` / `→` | Move the selected layout along the strip |
 | `Esc` | Close (or stop recording a shortcut) |
 | Arrow keys | Nudge the selected monitor |

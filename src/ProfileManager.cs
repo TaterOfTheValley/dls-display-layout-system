@@ -104,6 +104,7 @@ public static class ProfileManager
             }
 
             Reconcile(envelope.Layouts);
+            CleanHotkeys(envelope.Layouts);
             return envelope.Layouts;
         }
         catch (Exception ex)
@@ -214,6 +215,22 @@ public static class ProfileManager
             LastNotice = string.IsNullOrWhiteSpace(LastNotice) ? repair : $"{LastNotice} {repair}";
             TrySaveProfiles(layouts, out _);
         }
+    }
+
+    /// <summary>
+    /// Drops shortcuts that should never have been stored — a bare Caps Lock, a key with
+    /// no modifier, one layout's shortcut duplicated on another. Registered as a global
+    /// hotkey, any of those takes a key away from every program, so they are removed
+    /// from the file rather than merely skipped, and the user is told which went.
+    /// </summary>
+    private static void CleanHotkeys(List<DisplayProfile> layouts)
+    {
+        var removed = Hotkeys.Clean(layouts);
+        if (removed.Count == 0) return;
+
+        string notice = string.Join(" ", removed);
+        LastNotice = string.IsNullOrWhiteSpace(LastNotice) ? notice : $"{LastNotice} {notice}";
+        TrySaveProfiles(layouts, out _);
     }
 
     public static void SaveProfiles(List<DisplayProfile> profiles) => TrySaveProfiles(profiles, out _);
