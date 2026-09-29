@@ -33,8 +33,6 @@ public class ConfigForm : Form
     private bool _dragging;
     private bool _suppressCardClick;
 
-    /// <summary>Set by Cancel: the window closes without asking about unsaved edits.</summary>
-    private bool _discardOnClose;
 
     private FlowLayoutPanel _profileCardsPanel = null!;
     private TextBox _nameTextBox = null!;
@@ -48,6 +46,7 @@ public class ConfigForm : Form
     private Button _identifyOneBtn = null!;
     private Button _captureCurrentLayoutBtn = null!;
     private Button _cancelBtn = null!;
+    private Button _closeBtn = null!;
     private Button _saveBtn = null!;
     private Button _settingsFileBtn = null!;
     private Button _addProfileBtn = null!;
@@ -1201,16 +1200,17 @@ public class ConfigForm : Form
             TextAlign = ContentAlignment.MiddleRight
         };
 
-        // Reads "Close" while there is nothing to lose, and "Cancel" once there is, so
-        // the button says what it will do to the edits.
-        _cancelBtn = UiTheme.MakeButton("Close", false, TextScale, F(UiType.Body));
+        _closeBtn = UiTheme.MakeButton("Close", false, TextScale, F(UiType.Body));
+        _closeBtn.Size = new Size(T(90), Hold(40, UiType.Body));
+        _closeBtn.Click += (_, _) => Close();
+        _tips.SetToolTip(_closeBtn, "Close the editor. It asks first if there are unsaved edits.");
+
+        // Cancel takes back the edits and stays open: the way to try a change, look at it,
+        // and put everything back as it was.
+        _cancelBtn = UiTheme.MakeButton("Cancel", false, TextScale, F(UiType.Body));
         _cancelBtn.Size = new Size(T(100), Hold(40, UiType.Body));
-        _cancelBtn.Click += (_, _) =>
-        {
-            _discardOnClose = true;
-            Close();
-        };
-        _tips.SetToolTip(_cancelBtn, "Close the editor. Unsaved edits are discarded.");
+        _cancelBtn.Click += (_, _) => CancelEdits();
+        _tips.SetToolTip(_cancelBtn, "Discard your unsaved edits and go back to the saved layouts.");
 
         _saveBtn = UiTheme.MakeButton("Save", false, TextScale, F(UiType.Body));
         _saveBtn.Size = new Size(T(100), Hold(40, UiType.Body));
@@ -1221,12 +1221,14 @@ public class ConfigForm : Form
         _tips.SetToolTip(_settingsFileBtn, $"Show {ProfileManager.ConfigPath} in File Explorer");
         _settingsFileBtn.Click += (_, _) => OpenSettingsLocation();
 
-        // Apply saves first (see ApplySelected), so what Windows is switched to is
-        // always what is on disk.
+        // Apply acts on the screens only; it neither saves nor discards edits (see
+        // ApplySelected).
         _applyBtn = UiTheme.MakeButton("Apply layout", true, TextScale, F(UiType.Body));
         _applyBtn.Size = new Size(T(150), Hold(40, UiType.Body));
         _applyBtn.Click += (_, _) => ApplySelected();
-        _tips.SetToolTip(_applyBtn, "Save, then switch Windows to this layout. It reverts by itself unless you confirm.");
+        _tips.SetToolTip(_applyBtn,
+            "Try this layout on your screens as it is now. It reverts by itself unless you keep it. " +
+            "Applying does not save your edits.");
 
         footer.Resize += (_, _) =>
         {
@@ -1235,6 +1237,7 @@ public class ConfigForm : Form
             // what is left.
             int applyW = Fit(footer.Width, T(150), T(104), 0.20f);
             int cancelW = Fit(footer.Width, T(100), T(72), 0.11f);
+            int closeW = Fit(footer.Width, T(90), T(64), 0.10f);
             int saveW = Fit(footer.Width, T(90), T(64), 0.10f);
             int btnH = Math.Min(Hold(40, UiType.Body), footer.Height - S(14));
 
@@ -1243,7 +1246,8 @@ public class ConfigForm : Form
             _cancelBtn.SetBounds(_saveBtn.Left - S(10) - cancelW, (footer.Height - btnH) / 2, cancelW, btnH);
 
             int settingsW = Fit(footer.Width, T(124), T(88), 0.16f);
-            _settingsFileBtn.SetBounds(_cancelBtn.Left - S(10) - settingsW,
+            _closeBtn.SetBounds(_cancelBtn.Left - S(10) - closeW, (footer.Height - btnH) / 2, closeW, btnH);
+            _settingsFileBtn.SetBounds(_closeBtn.Left - S(10) - settingsW,
                 (footer.Height - btnH) / 2, settingsW, btnH);
 
             int statusW = Math.Min(T(300), Math.Max(T(80), _settingsFileBtn.Left - T(200)));
@@ -1263,6 +1267,7 @@ public class ConfigForm : Form
         footer.Controls.Add(_feedbackLabel);
         footer.Controls.Add(_statusLabel);
         footer.Controls.Add(_settingsFileBtn);
+        footer.Controls.Add(_closeBtn);
         footer.Controls.Add(_cancelBtn);
         footer.Controls.Add(_saveBtn);
         footer.Controls.Add(_applyBtn);
@@ -2061,6 +2066,17 @@ public class ConfigForm : Form
         }
     }
 
+    /// <summary>Puts the layouts back as last saved, and leaves the window open.</summary>
+    private void CancelEdits()
+    {
+        if (!_dirty) return;
+
+        EndHotkeyCapture();
+        ReplaceDraft(_shared);
+        _feedbackLabel.ForeColor = UiTheme.Gold;
+        _feedbackLabel.Text = "Edits discarded.";
+    }
+
     /// <summary>Moves the selected layout one place along the strip.</summary>
     private void MoveSelected(int delta)
     {
@@ -2148,15 +2164,22 @@ public class ConfigForm : Form
             return;
         }
 
-        // Pending edits go to disk before the switch, so what gets applied and what
-        // is stored can never disagree.
-        if (!SaveChanges()) return;
-
-        // No "this will turn off X" modal any more. The apply itself now reverts
-        // unless confirmed (KeepLayoutDialog), so a blocking warning beforehand asked
-        // the user to predict a consequence they are about to be shown directly —
-        // two confirmations for one action.
-        bool ok = LayoutSafety.Apply(_selectedProfile, interactive: true, out string msg);
+        // Two separate things can be undone in this window and they are kept apart on
+        // purpose. Save / Cancel are about the *layouts* — what is stored. Apply / Keep /
+        // Undo are about the *screens* — what Windows is doing right now. Applying does
+        // not save: an edited layout is tried on the screens first, and only what the
+        // user keeps and then saves becomes a stored layout. Applying a copy means
+        // nothing edited afterwards can change what the Keep prompt is judging.
+        //
+        // An edited layout has never been on screen, so it is not in TrustedLayouts and
+        // always gets the keep-or-revert prompt — the "try it, then keep or revert it"
+        // step. Reverting only restores the screens; the edits stay in the editor to
+        // adjust, Save, or Cancel.
+        //
+        // No "this will turn off X" modal: the apply itself reverts unless confirmed
+        // (KeepLayoutDialog), so a blocking warning beforehand asked the user to
+        // predict a consequence they are about to be shown directly.
+        bool ok = LayoutSafety.Apply(_selectedProfile.Clone(newId: false), interactive: true, out string msg);
         _feedbackLabel.Text = msg;
         _feedbackLabel.ForeColor = ok ? UiTheme.Ok : UiTheme.Danger;
         UpdateUndoBar();
@@ -2212,15 +2235,15 @@ public class ConfigForm : Form
         _dirtyNotified = false;
         UpdateWindowTitle();
         UpdateSaveState();
+        UpdateLayoutStatus();
     }
 
-    /// <summary>Save has something to do only while there are edits, and Close becomes
-    /// Cancel then, because closing is what throws them away.</summary>
+    /// <summary>Save and Cancel have something to do only while there are edits.</summary>
     private void UpdateSaveState()
     {
         if (_saveBtn == null || _cancelBtn == null) return;
         _saveBtn.Enabled = _dirty;
-        _cancelBtn.Text = _dirty ? "Cancel" : "Close";
+        _cancelBtn.Enabled = _dirty;
     }
 
     private void UpdateWindowTitle()
@@ -2284,6 +2307,10 @@ public class ConfigForm : Form
         string text = pending
             ? $"●  {differences.Count} pending change{(differences.Count == 1 ? "" : "s")} — not applied"
             : "●  In use — matches your displays";
+
+        // Two independent facts share this line: whether the screens match, and whether
+        // the layouts are saved. Applying settles the first and Save the second.
+        if (_dirty) text += "  ·  unsaved";
         var colour = pending ? UiTheme.Gold : UiTheme.Ok;
 
         // The count answers "is anything pending?"; the list behind it is there for
@@ -2293,6 +2320,7 @@ public class ConfigForm : Form
         string tip = pending
             ? "Applying this layout would:\n  " + string.Join("\n  ", differences)
             : "This layout is what Windows is using right now.";
+        if (_dirty) tip += "\n\nYou have unsaved edits: Save keeps them, Cancel discards them.";
 
         // Only touch either when it actually changed: this runs on every mouse-move of
         // a canvas drag, and reassigning Text repaints the footer.
@@ -2358,14 +2386,14 @@ public class ConfigForm : Form
         if (show)
         {
             _undoLabel.Text = LayoutSafety.RevertsUnlessKept
-                ? $"Reverting in {LayoutSafety.RemainingSeconds}s unless you keep this layout."
-                : $"Switched. You can undo for {LayoutSafety.RemainingSeconds}s.";
+                ? $"Reverting your screens in {LayoutSafety.RemainingSeconds}s unless you keep this layout."
+                : $"Screens switched. You can undo for {LayoutSafety.RemainingSeconds}s. Your edits are unaffected.";
         }
     }
 
     private void ConfigForm_FormClosing(object? sender, FormClosingEventArgs e)
     {
-        if (_discardOnClose || !_dirty) return;
+        if (!_dirty) return;
 
         // Windows shutting down, or the process being ended, will not wait for an
         // answer; losing the edits would be worse than saving them unasked.
