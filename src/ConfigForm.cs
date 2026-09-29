@@ -688,6 +688,7 @@ public class ConfigForm : Form
     private void CaptureFirstLayout()
     {
         var created = DisplayEngine.CaptureCurrentLayoutAsProfile("My layout", string.Empty);
+        TrustedLayouts.RememberLive(created);
         _profiles.Add(created);
         _selectedProfile = created;
         MarkDirty();
@@ -1820,6 +1821,7 @@ public class ConfigForm : Form
     private void AddProfileBtn_Click(object? sender, EventArgs e)
     {
         var created = DisplayEngine.CaptureCurrentLayoutAsProfile($"Profile {_profiles.Count + 1}", string.Empty);
+        TrustedLayouts.RememberLive(created);
         _profiles.Add(created);
         _selectedProfile = created;
         RebuildProfileCards();
@@ -1851,6 +1853,7 @@ public class ConfigForm : Form
     {
         if (_selectedProfile == null) return;
         var captured = DisplayEngine.CaptureCurrentLayoutAsProfile(_selectedProfile.Name, _selectedProfile.Hotkey);
+        TrustedLayouts.RememberLive(captured);
         _selectedProfile.Displays = captured.Displays;
         LoadSelectedProfile();
         InvalidateProfileCards();

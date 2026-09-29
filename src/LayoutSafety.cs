@@ -77,11 +77,18 @@ internal static class LayoutSafety
             ? $"Applied '{profile.Name}'."
             : $"Applied '{profile.Name}', but {verify.Summary}.";
 
-        // Skip the prompt only when nothing looks off: a kept layout that did not come
-        // out as saved (a monitor that failed to wake, say) is exactly the case the
-        // prompt is for.
-        bool needsAnswer = interactive && !(verify.Matched && TrustedLayouts.IsTrusted(trustKey));
+        // One rule for every caller: a layout that is already known to work needs no
+        // approval, one that is new (never kept, or edited since) does. The only thing
+        // a caller decides is whether there is anyone there to ask. A known layout that
+        // did not come out as saved (a monitor that failed to wake, say) counts as new,
+        // because that is exactly the case the prompt is for.
+        bool known = verify.Matched && TrustedLayouts.IsTrusted(trustKey);
+        bool needsAnswer = !known && interactive;
         _revertsUnlessKept = needsAnswer;
+
+        // With nobody to ask, a switch that came out exactly as saved is as good as
+        // kept: it was asked for by name and nothing is waiting to be reverted.
+        if (!interactive && verify.Matched) TrustedLayouts.Remember(trustKey);
 
         UndoStateChanged?.Invoke(null, EventArgs.Empty);
 

@@ -86,18 +86,50 @@ internal static class TrustedLayouts
         lock (Gate) return Load().Kept.Contains(key, StringComparer.Ordinal);
     }
 
-    /// <summary>Records that the user kept this result. Best effort: failing to write
-    /// only means the prompt appears again next time.</summary>
-    public static void Remember(string key)
+    /// <summary>Records that this result is known to work. Best effort: failing to
+    /// write only means the prompt appears again next time.</summary>
+    public static void Remember(string key) => Remember(new[] { key });
+
+    private static void Remember(IEnumerable<string> keys)
     {
         lock (Gate)
         {
             var store = Load();
-            store.Kept.Remove(key);
-            store.Kept.Add(key);
+            foreach (string key in keys)
+            {
+                store.Kept.Remove(key);
+                store.Kept.Add(key);
+            }
             if (store.Kept.Count > MaxRemembered) store.Kept.RemoveRange(0, store.Kept.Count - MaxRemembered);
             Save(store);
         }
+    }
+
+    /// <summary>
+    /// A layout captured from the screen as it is right now. Whatever is on screen
+    /// works — you are looking at it — so a layout that is only a copy of it is proven
+    /// by construction. It stops being proven the moment it is edited into something
+    /// that has never been on screen, which is exactly what "new" means here.
+    /// </summary>
+    public static void RememberLive(DisplayProfile captured) =>
+        Remember(KeyFor(captured, DisplayEngine.GetCurrentDisplays()));
+
+    /// <summary>
+    /// Layouts that already match the screen right now. Called once at startup so
+    /// layouts saved before this feature existed — each one already on screen at some
+    /// point — do not each need a first "Keep" to be believed. Not called while a
+    /// prompt is pending, because then the screen is still on probation.
+    /// </summary>
+    public static void SeedFromLive(IEnumerable<DisplayProfile> layouts)
+    {
+        if (LayoutSafety.RevertsUnlessKept) return;
+
+        var live = DisplayEngine.GetCurrentDisplays();
+        var proven = layouts
+            .Where(p => !p.NeedsRecapture && DisplayEngine.MatchesCurrent(p, live))
+            .Select(p => KeyFor(p, live))
+            .ToList();
+        if (proven.Count > 0) Remember(proven);
     }
 
     private static Store Load()
