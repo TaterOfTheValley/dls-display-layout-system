@@ -8,12 +8,12 @@ namespace DLS;
 /// just turned off, unable to reach any button — so confirmation has to be the
 /// action that requires input, not the recovery.
 ///
-/// A non-interactive apply (the CLI, a scheduled task) keeps the old opt-in behaviour:
-/// the snapshot is retained and Undo stays available for <see cref="UndoSeconds"/>,
-/// but nothing reverts on its own.
+/// A non-interactive apply (the CLI, a scheduled task) has no one to ask: the snapshot
+/// is retained and Undo stays available for <see cref="UndoSeconds"/>, but nothing
+/// reverts on its own.
 ///
-/// The prompt is also skipped for a layout the user has already kept once (see
-/// <see cref="TrustedLayouts"/>). The switch can still be undone for
+/// The prompt can also be turned off (<see cref="AppPreferences.ConfirmSwitches"/>) for
+/// someone who would rather switch straight through. The switch can still be undone for
 /// <see cref="UndoSeconds"/>; it just does not demand an answer.
 /// </summary>
 internal static class LayoutSafety
@@ -22,7 +22,6 @@ internal static class LayoutSafety
 
     private static DisplayProfile? _snapshot;
     private static DateTime _expiresUtc;
-    private static string? _pendingTrustKey;
     private static bool _revertsUnlessKept;
 
     public static event EventHandler? UndoStateChanged;
@@ -30,8 +29,8 @@ internal static class LayoutSafety
     public static bool CanUndo => _snapshot != null && DateTime.UtcNow < _expiresUtc;
 
     /// <summary>True while a keep-or-revert prompt is pending, i.e. the previous layout
-    /// comes back on its own unless the user says otherwise. False for a switch to an
-    /// already-kept layout or a non-interactive one, where Undo is only offered.</summary>
+    /// comes back on its own unless the user says otherwise. False when confirmation is
+    /// off or the apply was non-interactive, where Undo is only offered.</summary>
     public static bool RevertsUnlessKept => CanUndo && _revertsUnlessKept;
 
     public static int RemainingSeconds =>
@@ -47,7 +46,6 @@ internal static class LayoutSafety
         // also records which monitor was primary, which is what tells us afterwards
         // whether the app's own windows need to follow.
         var snapshot = DisplayEngine.CaptureCurrentLayoutAsProfile("Previous layout", string.Empty);
-        string trustKey = TrustedLayouts.KeyFor(profile, DisplayEngine.GetCurrentDisplays());
         string previousPrimary = WindowFollow.PrimaryIdentityOf(snapshot);
 
         // A pending prompt from an earlier switch is now stale — its snapshot
@@ -64,7 +62,6 @@ internal static class LayoutSafety
 
         _snapshot = snapshot;
         _expiresUtc = DateTime.UtcNow.AddSeconds(UndoSeconds);
-        _pendingTrustKey = trustKey;
         _revertsUnlessKept = false;
 
         // If this switch promoted a different panel to primary, the editor must not be
@@ -77,18 +74,12 @@ internal static class LayoutSafety
             ? $"Applied '{profile.Name}'."
             : $"Applied '{profile.Name}', but {verify.Summary}.";
 
-        // One rule for every caller: a layout that is already known to work needs no
-        // approval, one that is new (never kept, or edited since) does. The only thing
-        // a caller decides is whether there is anyone there to ask. A known layout that
-        // did not come out as saved (a monitor that failed to wake, say) counts as new,
-        // because that is exactly the case the prompt is for.
-        bool known = verify.Matched && TrustedLayouts.IsTrusted(trustKey);
-        bool needsAnswer = !known && interactive;
+        // One rule for every caller: ask unless the user has turned asking off. The only
+        // thing a caller decides is whether there is anyone there to ask. With asking
+        // off, a switch that did not come out as saved (a monitor that failed to wake,
+        // say) is still asked about, because that is exactly the case the prompt is for.
+        bool needsAnswer = interactive && (AppPreferences.ConfirmSwitches || !verify.Matched);
         _revertsUnlessKept = needsAnswer;
-
-        // With nobody to ask, a switch that came out exactly as saved is as good as
-        // kept: it was asked for by name and nothing is waiting to be reverted.
-        if (!interactive && verify.Matched) TrustedLayouts.Remember(trustKey);
 
         UndoStateChanged?.Invoke(null, EventArgs.Empty);
 
@@ -113,10 +104,6 @@ internal static class LayoutSafety
     {
         if (_snapshot == null) return;
 
-        // Keeping it is what earns the layout its pass on future switches.
-        if (_pendingTrustKey != null) TrustedLayouts.Remember(_pendingTrustKey);
-
-        _pendingTrustKey = null;
         _snapshot = null;
         _expiresUtc = DateTime.MinValue;
         UndoStateChanged?.Invoke(null, EventArgs.Empty);
@@ -137,7 +124,6 @@ internal static class LayoutSafety
         // useful to retry — re-applying a layout that was just rejected only
         // produces the same error, and leaving Undo enabled invites a loop.
         _snapshot = null;
-        _pendingTrustKey = null;
         _expiresUtc = DateTime.MinValue;
 
         KeepLayoutDialog.Dismiss();

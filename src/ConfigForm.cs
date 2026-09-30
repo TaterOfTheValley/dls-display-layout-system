@@ -716,7 +716,6 @@ public class ConfigForm : Form
     private void CaptureFirstLayout()
     {
         var created = DisplayEngine.CaptureCurrentLayoutAsProfile("My layout", string.Empty);
-        TrustedLayouts.RememberLive(created);
         _profiles.Add(created);
         _selectedProfile = created;
         MarkDirty();
@@ -1227,8 +1226,8 @@ public class ConfigForm : Form
         _applyBtn.Size = new Size(T(150), Hold(40, UiType.Body));
         _applyBtn.Click += (_, _) => ApplySelected();
         _tips.SetToolTip(_applyBtn,
-            "Try this layout on your screens as it is now. It reverts by itself unless you keep it. " +
-            "Applying does not save your edits.");
+            "Try this layout on your screens as it is now. Unless you have turned confirmation off in " +
+            "the tray menu, it reverts by itself unless you keep it. Applying does not save your edits.");
 
         footer.Resize += (_, _) =>
         {
@@ -1968,7 +1967,6 @@ public class ConfigForm : Form
     private void AddProfileBtn_Click(object? sender, EventArgs e)
     {
         var created = DisplayEngine.CaptureCurrentLayoutAsProfile($"Profile {_profiles.Count + 1}", string.Empty);
-        TrustedLayouts.RememberLive(created);
         _profiles.Add(created);
         _selectedProfile = created;
         RebuildProfileCards();
@@ -2005,7 +2003,6 @@ public class ConfigForm : Form
     {
         if (_selectedProfile == null) return;
         var captured = DisplayEngine.CaptureCurrentLayoutAsProfile(_selectedProfile.Name, _selectedProfile.Hotkey);
-        TrustedLayouts.RememberLive(captured);
         _selectedProfile.Displays = captured.Displays;
         LoadSelectedProfile();
         InvalidateProfileCards();
@@ -2216,8 +2213,8 @@ public class ConfigForm : Form
         // user keeps and then saves becomes a stored layout. Applying a copy means
         // nothing edited afterwards can change what the Keep prompt is judging.
         //
-        // An edited layout has never been on screen, so it is not in TrustedLayouts and
-        // always gets the keep-or-revert prompt — the "try it, then keep or revert it"
+        // Unless the user has turned confirmation off (AppPreferences.ConfirmSwitches),
+        // this gets the keep-or-revert prompt — the "try it, then keep or revert it"
         // step. Reverting only restores the screens; the edits stay in the editor to
         // adjust, Save, or Cancel.
         //
@@ -2422,10 +2419,10 @@ public class ConfigForm : Form
 
     private void UpdateUndoBar()
     {
-        // The overlay already asks "keep or revert?" for every interactive apply, with
-        // its own countdown — showing this bar at the same time was the same question
-        // twice. It only needs to appear for a non-interactive apply (the CLI, a hotkey
-        // with no message loop), where the overlay never opened in the first place.
+        // The overlay already asks "keep or revert?" when confirmation is on, with its
+        // own countdown — showing this bar at the same time was the same question twice.
+        // It only needs to appear when the overlay never opened: confirmation turned
+        // off, or a non-interactive apply (the CLI).
         bool show = LayoutSafety.CanUndo && !KeepLayoutDialog.IsOpen;
         _undoPanel.Visible = show;
         if (show)
