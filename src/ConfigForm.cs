@@ -100,6 +100,10 @@ public class ConfigForm : Form
     private Control? _rail;
     private Control? _addTile;
     private Control? _inspector;
+
+    /// <summary>The inspector's per-monitor controls, which only mean something once a
+    /// monitor is selected. Shown and hidden together by <see cref="UpdateInspector"/>.</summary>
+    private readonly List<Control> _inspectorControls = new();
     private Control? _footer;
     private Control[]? _editorChrome;
     private List<DisplayInfo> _liveForEmptyState = new();
@@ -1009,6 +1013,11 @@ public class ConfigForm : Form
         panel.Controls.Add(_refreshBox);
         panel.Controls.Add(scaleLabel);
         panel.Controls.Add(_scaleBox);
+        _inspectorControls.AddRange(new Control[]
+        {
+            _includeToggle, _primaryBtn, _identifyOneBtn,
+            resolutionLabel, _resolutionBox, refreshLabel, _refreshBox, scaleLabel, _scaleBox
+        });
         _inspector = panel;
         return panel;
     }
@@ -1760,20 +1769,20 @@ public class ConfigForm : Form
         {
             _inspectorTitle.Text = "No display selected";
             _inspectorSub.Text = "Click a monitor on the canvas, then drag it into place.";
-            _includeToggle.Enabled = false;
             _includeToggle.Checked = false;
-            _primaryBtn.Enabled = false;
-            _identifyOneBtn.Enabled = false;
             _live = null;
-            _resolutionBox.Enabled = false;
-            _refreshBox.Enabled = false;
-            _scaleBox.Enabled = false;
             _resolutionBox.Items.Clear();
             _refreshBox.Items.Clear();
             _scaleBox.Items.Clear();
+
+            // Hidden rather than greyed out: a row of dead, empty boxes reads as a
+            // fault, when all it means is that nothing is selected yet.
+            foreach (var control in _inspectorControls) control.Visible = false;
         }
         else
         {
+            foreach (var control in _inspectorControls) control.Visible = true;
+
             _inspectorTitle.Text = string.IsNullOrWhiteSpace(sel.MonitorId) ? sel.DeviceName : sel.MonitorId;
 
             var liveDisplays = DisplayEngine.GetCurrentDisplays();
