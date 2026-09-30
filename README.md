@@ -14,7 +14,8 @@ other two back exactly as they were. That is what this does.
   and scaling.
 - Switch with a global hotkey or from the tray.
 - Turn monitors off and back on again — the part Windows makes hardest.
-- Revert automatically if you don't confirm, so a switch can't strand you
+- Revert automatically if you don't confirm, so a switch can't strand you (or turn
+  confirmation off and keep a 20-second undo)
   looking at a monitor it just turned off.
 
 ## Starting up
@@ -158,25 +159,17 @@ That is deliberate, and it is the opposite of a normal confirmation dialog. The
 way a display switch fails is that the monitor you would click on is now black —
 so recovery has to be the thing that needs no input.
 
-**Only a new layout asks.** A layout you already know works switches straight
-through, with no prompt: it can still be undone for 20 seconds, but nothing waits
-on you. That is one rule for the tray, the editor, hotkeys and the command line.
+It is the default, and it applies to the tray, hotkeys and the editor alike.
 
-A layout is known to work when it was captured from your screen (whatever is on
-screen works), when you have clicked *Keep this layout* on it, when it was on
-screen at startup, or when the command line applied it and it came out as saved.
-It becomes new again the moment you edit it into something that has not been on
-screen — move a monitor, change a resolution, refresh rate or scale. A known
-layout that does not come out as saved (a monitor that failed to turn on) asks
-too. Renaming a layout does not make it new. Plugging in a different set of
-monitors does, because the same layout is a different experiment on different
-hardware.
+**Prefer to switch straight through?** Untick **Confirm layout switches** in the
+tray menu. Switches then apply immediately with no prompt; you can still undo for
+20 seconds (tray menu, or `Ctrl` + `Z` in the editor), but nothing waits on you and
+nothing reverts by itself. Even then, a switch that did not come out as saved (a
+monitor that failed to turn on) still asks, because that is the case the prompt is
+for. The choice is remembered in `preferences.json` beside the settings file.
 
-What is known is remembered in `trusted-layouts.json` beside the settings file;
-delete it and layouts are asked about again as they come up.
-
-The command line follows the same rule but has no one to ask: it switches to a new
-layout without a prompt, and nothing auto-reverts there.
+The command line has no one to ask: it never prompts and nothing auto-reverts there,
+whichever way the option is set.
 
 ## Resolution, refresh rate and scaling
 

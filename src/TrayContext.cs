@@ -97,10 +97,6 @@ public class TrayContext : ApplicationContext
         RefreshMenuAndHotkeys();
         DetectActiveProfile();
 
-        // Layouts saved before "already kept" was remembered are believed if they are
-        // what is on screen right now, rather than each needing one prompt first.
-        TrustedLayouts.SeedFromLive(_profiles);
-
         // The layout can change without this app doing it — Windows display settings,
         // a monitor plugged or unplugged, a driver event. Without this the tray shows
         // a checkmark against a profile that is no longer live.
@@ -376,6 +372,14 @@ public class TrayContext : ApplicationContext
             Invoke = () => _ = CheckForUpdatesAsync(manual: true)
         });
 
+        entries.Add(new TrayPopup.CommandEntry
+        {
+            Text = "Confirm layout switches",
+            Checked = AppPreferences.ConfirmSwitches,
+            Detail = AppPreferences.ConfirmSwitches ? null : "undo only",
+            Invoke = ToggleConfirmSwitches
+        });
+
         var startup = StartupRegistration.Current;
         entries.Add(new TrayPopup.CommandEntry
         {
@@ -493,6 +497,18 @@ public class TrayContext : ApplicationContext
         return true;
     }
 
+    private void ToggleConfirmSwitches()
+    {
+        bool wanted = !AppPreferences.ConfirmSwitches;
+        AppPreferences.ConfirmSwitches = wanted;
+        RefreshMenuAndHotkeys();
+        _notifyIcon.ShowBalloonTip(2500, AppInfo.Name,
+            wanted
+                ? $"Switches will ask you to keep the layout, and revert after {LayoutSafety.UndoSeconds}s if you don't."
+                : $"Switches apply straight away. You can still undo for {LayoutSafety.UndoSeconds}s.",
+            ToolTipIcon.Info);
+    }
+
     private void ToggleStartup()
     {
         bool wanted = !StartupRegistration.IsEnabled;
@@ -542,7 +558,6 @@ public class TrayContext : ApplicationContext
     private void CaptureCurrentLayout()
     {
         var created = DisplayEngine.CaptureCurrentLayoutAsProfile($"Layout {_profiles.Count + 1}", string.Empty);
-        TrustedLayouts.RememberLive(created);
         _profiles.Add(created);
         if (!ProfileManager.TrySaveProfiles(_profiles, out string saveError))
         {
@@ -582,6 +597,12 @@ public class TrayContext : ApplicationContext
         entries.Add(new TrayPopup.CommandEntry { Text = "Check for updates\u2026", Detail = AppInfo.Version, Invoke = () => { } });
         entries.Add(new TrayPopup.CommandEntry
         {
+            Text = "Confirm layout switches",
+            Checked = AppPreferences.ConfirmSwitches,
+            Invoke = () => { }
+        });
+        entries.Add(new TrayPopup.CommandEntry
+        {
             Text = "Start with Windows",
             Checked = StartupRegistration.IsEnabled,
             Invoke = () => { }
@@ -593,12 +614,10 @@ public class TrayContext : ApplicationContext
 
     private void SwitchToProfile(DisplayProfile profile)
     {
-        // No "this will turn off X" confirmation. The switch reverts by itself unless
-        // you keep it, so a modal beforehand asked the user to predict a consequence
-        // they are about to be shown directly — two confirmations for one action, and
-        // a system dialog in the middle of what should be a one-keypress switch.
-        // The editor dropped this already; the tray kept it, so the same action
-        // behaved differently depending on where it was started.
+        // No "this will turn off X" confirmation beforehand. The switch reverts by
+        // itself unless you keep it, so a modal first asked the user to predict a
+        // consequence they are about to be shown directly — two confirmations for one
+        // action. (With confirmation turned off there is still the Undo.)
         bool success = LayoutSafety.Apply(profile, interactive: true, out string error);
         if (success)
         {
