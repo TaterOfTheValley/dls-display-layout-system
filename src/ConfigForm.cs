@@ -34,6 +34,7 @@ public class ConfigForm : Form
     private bool _suppressCardClick;
 
 
+    private ScrollStrip _railStrip = null!;
     private FlowLayoutPanel _profileCardsPanel = null!;
     private TextBox _nameTextBox = null!;
     private TextBox _hotkeyTextBox = null!;
@@ -81,11 +82,6 @@ public class ConfigForm : Form
     private sealed class BufferedPanel : Panel
     {
         public BufferedPanel() => DoubleBuffered = true;
-    }
-
-    private sealed class BufferedFlowPanel : FlowLayoutPanel
-    {
-        public BufferedFlowPanel() => DoubleBuffered = true;
     }
 
     private DisplayInfo? _live;
@@ -1376,17 +1372,14 @@ public class ConfigForm : Form
             e.Graphics.DrawLine(pen, 0, rail.Height - 1, rail.Width, rail.Height - 1);
         };
 
-        _profileCardsPanel = new BufferedFlowPanel
+        _railStrip = new ScrollStrip(S)
         {
             Dock = DockStyle.Fill,
-            BackColor = UiTheme.Panel,
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false,
-            AutoScroll = true,
-            Padding = new Padding(0)
+            BackColor = UiTheme.Panel
         };
+        _profileCardsPanel = _railStrip.Content;
 
-        rail.Controls.Add(_profileCardsPanel);
+        rail.Controls.Add(_railStrip);
         return rail;
     }
 
@@ -1567,7 +1560,11 @@ public class ConfigForm : Form
 
             var view = new ProfileCardView { Profile = p, CardPanel = card };
 
-            card.Paint += (_, e) => PaintLayoutCard(e.Graphics, card, view);
+            card.Paint += (_, e) =>
+            {
+                PaintLayoutCard(e.Graphics, card, view);
+                _railStrip.PaintFade(e.Graphics, card);
+            };
             card.Click += (_, _) =>
             {
                 // The click that ends a drag is not a selection; the drag already did that.
@@ -1607,6 +1604,7 @@ public class ConfigForm : Form
             using var brush = new SolidBrush(hot ? UiTheme.Gold : UiTheme.Muted);
             using var centre = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
             g.DrawString("+  New layout", font, brush, addTile.ClientRectangle, centre);
+            _railStrip.PaintFade(g, addTile);
         };
         _addTile = addTile;
         addTile.Click += AddProfileBtn_Click;
@@ -1697,6 +1695,8 @@ public class ConfigForm : Form
         EndHotkeyCapture();
         _selectedProfile = p;
         InvalidateProfileCards();
+        var view = _cardViews.FirstOrDefault(v => v.Profile.Id == p.Id);
+        if (view != null) _railStrip.ScrollIntoView(view.CardPanel);
         LoadSelectedProfile();
     }
     private void UpdateSelectedCardHotkey(string hotkey)
@@ -2157,7 +2157,7 @@ public class ConfigForm : Form
         _cardViews.Remove(view);
         _cardViews.Insert(index, view);
         _profileCardsPanel.Controls.SetChildIndex(view.CardPanel, index);
-        _profileCardsPanel.ScrollControlIntoView(view.CardPanel);
+        _railStrip.ScrollIntoView(view.CardPanel);
         MarkDirty();
     }
 
