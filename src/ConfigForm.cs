@@ -39,6 +39,7 @@ public class ConfigForm : Form
     private TextBox _nameTextBox = null!;
     private TextBox _hotkeyTextBox = null!;
     private Button _captureHotkeyBtn = null!;
+    private Button _clearHotkeyBtn = null!;
     private MonitorCanvas _canvas = null!;
     private Label _inspectorTitle = null!;
     private Label _inspectorSub = null!;
@@ -835,7 +836,7 @@ public class ConfigForm : Form
             Cursor = Cursors.Hand
         };
         _snapToggle.CheckedChanged += (_, _) => _canvas.SnapEnabled = _snapToggle.Checked;
-        _tips.SetToolTip(_snapToggle, "Magnetically align monitor edges while dragging");
+        _tips.SetToolTip(_snapToggle, "Align monitor edges and centers while dragging. Hold Alt to move freely.");
 
         tools.Controls.AddRange(new Control[] { _snapToggle, _fitBtn, _identifyAllBtn, _refreshBtn });
 
@@ -1333,7 +1334,7 @@ public class ConfigForm : Form
     }
 
     private const string CanvasHintText =
-        "Click a monitor to select it  ·  Double-click for main  ·  Arrow keys nudge  ·  Scroll to zoom  ·  Ctrl+1…9 switch layout  ·  Drag a layout or Alt+←/→ to reorder  ·  Ctrl+S save  ·  Ctrl+Enter apply";
+        "Click a monitor to select it  ·  Double-click for main  ·  Arrow keys nudge  ·  Alt+drag moves freely  ·  Scroll to zoom  ·  Ctrl+1…9 switch layout  ·  Drag a layout or Alt+←/→ to reorder  ·  Ctrl+S save  ·  Ctrl+Enter apply";
 
     private const int RailCardW = 196;
     private const int RailCardH = 84;
@@ -1430,6 +1431,10 @@ public class ConfigForm : Form
         _hotkeyTextBox.LostFocus += HotkeyTextBox_LostFocus;
         _hotkeyTextBox.KeyDown += HotkeyTextBox_KeyDown;
         _captureHotkeyBtn = UiTheme.MakeButton("Record", false, TextScale, F(UiType.Body));
+        _clearHotkeyBtn = UiTheme.MakeButton("Clear", false, TextScale, F(UiType.Body));
+        _clearHotkeyBtn.Enabled = false;
+        _clearHotkeyBtn.Click += (_, _) => ClearSelectedHotkey();
+        _tips.SetToolTip(_clearHotkeyBtn, "Remove this layout's shortcut, then Save to keep the change");
 
         // Doubles as the way out while listening: it reads "Cancel" then, and pressing
         // it stops listening without recording anything.
@@ -1472,7 +1477,7 @@ public class ConfigForm : Form
         {
             bool compact = Compact;
             int pad = S(18);
-            int gap = S(8);
+            int gap = S(6);
             var rows = MetaRows(compact);
             int labelY = rows.LabelY;
             int labelH = rows.LabelH;
@@ -1481,11 +1486,37 @@ public class ConfigForm : Form
 
             int room = bar.Width - pad * 2;
 
+            if (StackMeta)
+            {
+                // Keep the shortcut and its two buttons together when enlarged text
+                // cannot fit all the layout controls on a single row.
+                nameLabel.SetBounds(pad, labelY, room, labelH);
+                _nameTextBox.SetBounds(pad, y, room, h);
+                int shortcutLabelY = y + h + S(8);
+                int shortcutY = shortcutLabelY + labelH + S(4);
+                int recordWidth = T(84), clearWidth = T(68);
+                int shortcutWidth = Math.Max(S(40), room - recordWidth - clearWidth - gap * 2);
+                shortcutLabel.SetBounds(pad, shortcutLabelY, shortcutWidth, labelH);
+                _hotkeyTextBox.SetBounds(pad, shortcutY, shortcutWidth, h);
+                _captureHotkeyBtn.SetBounds(_hotkeyTextBox.Right + gap, shortcutY, recordWidth, h);
+                _clearHotkeyBtn.SetBounds(_captureHotkeyBtn.Right + gap, shortcutY, clearWidth, h);
+                int actionY = shortcutY + h + S(8);
+                int actionWidth = Math.Min(T(120), (room - gap * 2) / 3);
+                int actionX = pad;
+                foreach (var button in new[] { _captureCurrentLayoutBtn, _duplicateBtn, _deleteProfileBtn })
+                {
+                    button.SetBounds(actionX, actionY, actionWidth, h);
+                    actionX += actionWidth + gap;
+                }
+                return;
+            }
+
             // The three layout actions shrink before anything else does: their labels
             // are short, so they stay readable a long way down.
-            int actionW = Fit(room, T(96), T(74), 0.20f);
-            int recordW = Fit(room, T(84), T(64), 0.11f);
-            int hotkeyW = Fit(room, T(220), T(150), 0.26f);
+            int actionW = Fit(room, T(96), T(74), 0.10f);
+            int recordW = Fit(room, T(84), T(64), 0.09f);
+            int clearW = Fit(room, T(68), T(52), 0.08f);
+            int hotkeyW = Fit(room, T(180), T(100), 0.23f);
 
             int right = bar.Width - pad;
             foreach (var b in new[] { _deleteProfileBtn, _duplicateBtn, _captureCurrentLayoutBtn })
@@ -1495,13 +1526,15 @@ public class ConfigForm : Form
                 right -= gap;
             }
 
-            right -= S(compact ? 8 : 14);
+            right -= S(8);
+            _clearHotkeyBtn.SetBounds(right - clearW, y, clearW, h);
+            right -= clearW + gap;
             _captureHotkeyBtn.SetBounds(right - recordW, y, recordW, h);
             _hotkeyTextBox.SetBounds(right - recordW - gap - hotkeyW, y, hotkeyW, h);
 
             // Whatever is left is the name's, down to a floor that still shows a name
             // rather than one word of it.
-            int nameW = Math.Min(T(360), Math.Max(T(120), _hotkeyTextBox.Left - pad - S(20)));
+            int nameW = Math.Min(T(360), Math.Max(T(100), _hotkeyTextBox.Left - pad - S(12)));
             _nameTextBox.SetBounds(pad, y, nameW, h);
 
             nameLabel.SetBounds(pad, labelY, nameW, labelH);
@@ -1511,7 +1544,7 @@ public class ConfigForm : Form
         bar.Controls.AddRange(new Control[]
         {
             nameLabel, shortcutLabel,
-            _nameTextBox, _hotkeyTextBox, _captureHotkeyBtn,
+            _nameTextBox, _hotkeyTextBox, _captureHotkeyBtn, _clearHotkeyBtn,
             _captureCurrentLayoutBtn, _duplicateBtn, _deleteProfileBtn, _addProfileBtn
         });
         return bar;
@@ -1519,6 +1552,8 @@ public class ConfigForm : Form
 
     /// <summary>Where the name-and-shortcut bar's rows sit.</summary>
     private readonly record struct MetaLayout(int LabelY, int LabelH, int RowY, int RowH, int Height);
+
+    private bool StackMeta => DesignClientW < 740 * UiScaling.TextScale;
 
     /// <summary>
     /// The bar's two rows, a caption over a row of boxes and buttons, each as tall as
@@ -1530,7 +1565,9 @@ public class ConfigForm : Form
         int labelH = Hold(16, UiType.Caption);
         int rowY = labelY + labelH + S(compact ? 2 : 4);
         int rowH = Hold(compact ? 30 : 34, UiType.BodyLarge);
-        return new MetaLayout(labelY, labelH, rowY, rowH, rowY + rowH + S(12));
+        int height = rowY + rowH + S(12);
+        if (StackMeta) height += labelH + rowH * 2 + S(20);
+        return new MetaLayout(labelY, labelH, rowY, rowH, height);
     }
 
     /// <summary>Rebuilds the layout thumbnails.</summary>
@@ -1719,6 +1756,7 @@ public class ConfigForm : Form
         _loading = true;
         _nameTextBox.Text = _selectedProfile.Name;
         _hotkeyTextBox.Text = _selectedProfile.Hotkey;
+        _clearHotkeyBtn.Enabled = !string.IsNullOrWhiteSpace(_selectedProfile.Hotkey);
         _canvas.Bind(_selectedProfile);
         UpdateInspector();
         RefreshActiveBadges();
@@ -1926,10 +1964,7 @@ public class ConfigForm : Form
         // global hotkey.
         if (e.KeyCode is Keys.Back or Keys.Delete && !e.Control && !e.Alt && !e.Shift)
         {
-            SetSelectedHotkey(string.Empty);
-            EndHotkeyCapture();
-            _hotkeyHint.ForeColor = UiTheme.Ok;
-            _hotkeyHint.Text = "Shortcut cleared.";
+            ClearSelectedHotkey();
             return;
         }
 
@@ -1966,11 +2001,21 @@ public class ConfigForm : Form
     private void SetSelectedHotkey(string hotkey)
     {
         _hotkeyTextBox.Text = hotkey;
+        _clearHotkeyBtn.Enabled = _selectedProfile != null && !string.IsNullOrWhiteSpace(hotkey);
         if (_selectedProfile == null || _selectedProfile.Hotkey == hotkey) return;
 
         _selectedProfile.Hotkey = hotkey;
         UpdateSelectedCardHotkey(hotkey);
         MarkDirty();
+    }
+
+    private void ClearSelectedHotkey()
+    {
+        if (_selectedProfile == null) return;
+        EndHotkeyCapture();
+        SetSelectedHotkey(string.Empty);
+        _hotkeyHint.ForeColor = UiTheme.Ok;
+        _hotkeyHint.Text = "Shortcut cleared. Save to keep the change.";
     }
 
     private void AddProfileBtn_Click(object? sender, EventArgs e)
