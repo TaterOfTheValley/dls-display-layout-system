@@ -110,6 +110,11 @@ the one you want from its shape faster than from its name. Select one and the
 canvas below shows that arrangement; drag monitors to rearrange, drag one off the
 canvas to turn it off.
 
+With **Snap** enabled, monitor edges align as you drag, and a gentle center snap
+helps center a smaller monitor above, below, or beside a larger one. A dashed
+**CENTER** guide marks the shared centerline. Hold **Alt** while dragging to move
+freely; exact center alignment is still indicated, even with Snap turned off.
+
 Two things can be undone here, and they are kept separate:
 
 - **Your layouts** (what is stored). Edits are held until you press **Save**.
@@ -127,6 +132,10 @@ status while edits are pending.
 
 Drag a layout along the strip to reorder it — the order is the one the tray menu
 and `Ctrl` + `1`…`9` use. **Delete** asks before it removes a layout.
+
+Use **Clear** beside **Record** to remove the selected layout's shortcut, then
+**Save** to keep the change. The shortcut is available to assign to another layout
+as soon as it is cleared in the editor; **Cancel** restores the saved shortcuts.
 
 While recording a shortcut, **Cancel**, `Esc`, or clicking anywhere else stops
 listening without changing it, and `Backspace` or `Delete` removes the shortcut.
@@ -323,6 +332,16 @@ Both publish a single file to `dist\`, which is gitignored. Or directly:
 ```
 dotnet build src\DLS.csproj -c Release
 ```
+
+Run the alignment and editor regression checks on Windows:
+
+```
+dotnet run --project tests\DLS.Checks.csproj -c Release
+dotnet run --project tests\DLS.Checks.csproj -c Release -- 225
+```
+
+The checks read the connected monitors and use a temporary settings folder for
+save/reload verification. They do not apply display changes or write your layouts.
 
 ## Releasing
 

@@ -41,7 +41,7 @@ internal sealed class MonitorCanvas : Control
     private bool _dragFromShelf;
     private bool _viewFrozen;
     private ViewTransform _view = new();
-    private readonly List<(Point A, Point B)> _guides = new();
+    private readonly List<(Point A, Point B, bool Center)> _guides = new();
     private bool _overShelf;
 
     private const int ShelfWidthDesign = 184;
@@ -864,9 +864,21 @@ internal sealed class MonitorCanvas : Control
     {
         if (_guides.Count == 0) return;
         using var pen = new Pen(Color.FromArgb(200, UiTheme.Gold), 1.5f) { DashStyle = DashStyle.Dash };
-        foreach (var (a, b) in _guides)
+        using var font = UiType.Create(P(UiType.Caption), FontStyle.Bold);
+        using var brush = new SolidBrush(UiTheme.Gold);
+        using var background = new SolidBrush(UiTheme.Input);
+        foreach (var (a, b, center) in _guides)
         {
             g.DrawLine(pen, a, b);
+            if (!center) continue;
+            string label = "CENTER";
+            var size = g.MeasureString(label, font);
+            float x = a.X == b.X ? a.X + S(6) : ShelfWidth + Pad;
+            float y = a.X == b.X ? Math.Max(Pad, TopReserve) + S(6) : a.Y + S(6);
+            x = Math.Clamp(x, ShelfWidth + Pad, Math.Max(ShelfWidth + Pad, Width - Pad - size.Width));
+            y = Math.Clamp(y, Pad, Math.Max(Pad, Height - Pad - size.Height));
+            g.FillRectangle(background, x - S(3), y, size.Width + S(6), size.Height);
+            g.DrawString(label, font, brush, x, y);
         }
     }
 
@@ -994,6 +1006,7 @@ internal sealed class MonitorCanvas : Control
             LayoutChanged?.Invoke(this, EventArgs.Empty);
         }
 
+        _guides.Clear();
         Invalidate();
     }
 
@@ -1085,65 +1098,30 @@ internal sealed class MonitorCanvas : Control
 
     private void Snap(CanvasItem moving, ref Point screen)
     {
-        if (!SnapEnabled)
-        {
-            _guides.Clear();
-            return;
-        }
         _guides.Clear();
-        int w = Math.Max(1, moving.Config.Width);
-        int h = Math.Max(1, moving.Config.Height);
-        int x = screen.X;
-        int y = screen.Y;
-        int bestAbsX = SnapThreshold + 1;
-        int bestAbsY = SnapThreshold + 1;
-        int snapX = x;
-        int snapY = y;
-
-        foreach (var other in _items.Where(i => i.Config.Enabled && !ReferenceEquals(i, moving)))
+        // Centers attract only within four canvas pixels (and never farther than
+        // the existing edge threshold). Pointer movement is always measured from
+        // the unsnapped position, so moving away releases the snap immediately.
+        int centerThreshold = Math.Min(SnapThreshold,
+            Math.Max(1, (int)Math.Round(S(4) / Math.Max(0.0001f, _view.Scale))));
+        var result = MonitorAlignment.Calculate(
+            new Rectangle(screen.X, screen.Y, Math.Max(1, moving.Config.Width), Math.Max(1, moving.Config.Height)),
+            _items.Where(i => i.Config.Enabled && !ReferenceEquals(i, moving))
+                .Select(i => new Rectangle(i.Config.X, i.Config.Y, Math.Max(1, i.Config.Width), Math.Max(1, i.Config.Height))),
+            SnapThreshold, centerThreshold, SnapEnabled && (ModifierKeys & Keys.Alt) == 0);
+        screen = result.Position;
+        foreach (var guide in result.Guides)
         {
-            int ox = other.Config.X;
-            int oy = other.Config.Y;
-            int ow = Math.Max(1, other.Config.Width);
-            int oh = Math.Max(1, other.Config.Height);
-
-            int[] xs = { ox - w, ox + ow, ox, ox + ow - w };
-            foreach (int candidate in xs)
+            if (guide.Vertical)
             {
-                int d = Math.Abs(x - candidate);
-                if (d < bestAbsX && d <= SnapThreshold)
-                {
-                    bestAbsX = d;
-                    snapX = candidate;
-                }
+                int cx = (int)Math.Round(guide.Coordinate * _view.Scale + _view.OffsetX);
+                _guides.Add((new Point(cx, Pad), new Point(cx, Height - Pad), guide.Center));
             }
-
-            int[] ys = { oy - h, oy + oh, oy, oy + oh - h };
-            foreach (int candidate in ys)
+            else
             {
-                int d = Math.Abs(y - candidate);
-                if (d < bestAbsY && d <= SnapThreshold)
-                {
-                    bestAbsY = d;
-                    snapY = candidate;
-                }
+                int cy = (int)Math.Round(guide.Coordinate * _view.Scale + _view.OffsetY);
+                _guides.Add((new Point(ShelfWidth + Pad, cy), new Point(Width - Pad, cy), guide.Center));
             }
-        }
-
-        if (bestAbsX <= SnapThreshold) x = snapX;
-        if (bestAbsY <= SnapThreshold) y = snapY;
-        screen = new Point(x, y);
-
-        _guides.Clear();
-        if (bestAbsX <= SnapThreshold)
-        {
-            int cx = (int)Math.Round(x * _view.Scale + _view.OffsetX);
-            _guides.Add((new Point(cx, Pad), new Point(cx, Height - Pad)));
-        }
-        if (bestAbsY <= SnapThreshold)
-        {
-            int cy = (int)Math.Round(y * _view.Scale + _view.OffsetY);
-            _guides.Add((new Point(ShelfWidth + Pad, cy), new Point(Width - Pad, cy)));
         }
     }
 
