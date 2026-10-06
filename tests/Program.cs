@@ -66,6 +66,49 @@ internal static class Program
         Check(clear.Enabled, "Recording a replacement should re-enable Clear");
         clear.PerformClick();
 
+        // Exercise the editor registration contract with actual Windows hotkeys.
+        using (var manager = new HotkeyManager())
+        using (var probe = new HotkeyManager())
+        {
+            string chord = "Ctrl + Alt + Shift + F11";
+            var originals = new List<DisplayProfile>
+            {
+                new() { Name = "First", Hotkey = chord },
+                new() { Name = "Second" }
+            };
+            using var editor = new ConfigForm(originals, () => { });
+            editor.Show();
+            void Refresh()
+            {
+                manager.UnregisterAll();
+                if (editor.IsCapturingHotkey) return;
+                foreach (var profile in originals)
+                {
+                    string shortcut = editor.ShortcutFor(profile.Id);
+                    if (shortcut.Length > 0)
+                        Check(manager.Register(shortcut, () => { }), "Draft shortcut should register");
+                }
+            }
+            editor.ShortcutStateChanged += Refresh;
+            Refresh();
+            Check(!probe.Register(chord, () => { }), "Saved shortcut should be registered");
+            Invoke(editor, "ClearSelectedHotkey");
+            Check(probe.Register(chord, () => { }), "Clear should immediately release the Windows registration");
+            probe.UnregisterAll();
+            Invoke(editor, "CancelEdits");
+            Check(!probe.Register(chord, () => { }), "Cancel should restore the Windows registration");
+            var drafts = Field<List<DisplayProfile>>(editor, "_profiles");
+            Invoke(editor, "SelectProfile", drafts[1]);
+            Invoke(editor, "StartHotkeyCapture");
+            Check(probe.Register(chord, () => { }), "Recording should release existing shortcuts so their keys reach the editor");
+            probe.UnregisterAll();
+            Invoke(editor, "HotkeyTextBox_KeyDown", editor, new KeyEventArgs(Keys.Control | Keys.Alt | Keys.Shift | Keys.F11));
+            Check(drafts[0].Hotkey == "" && drafts[1].Hotkey == chord, "Recording an existing shortcut should transfer ownership");
+            Check(!editor.IsCapturingHotkey && !probe.Register(chord, () => { }), "Completed capture should restore registration");
+            Invoke(editor, "CancelEdits");
+            editor.Close();
+        }
+
         // Save only to a private temporary settings folder, never the user's layouts.
         var paths = typeof(ConfigForm).Assembly.GetType("DLS.AppPaths")!;
         var directory = paths.GetProperty("SettingsDirectory")!;

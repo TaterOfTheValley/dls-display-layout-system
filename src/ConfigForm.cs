@@ -14,7 +14,8 @@ public class ConfigForm : Form
 
     /// <summary>
     /// The layouts as this window is editing them: a private copy, so nothing an edit
-    /// does is visible to the tray, the hotkeys or the settings file until Save. The
+    /// does is visible to the tray or the settings file until Save. Shortcut registrations
+    /// preview the draft immediately and revert on Cancel. The
     /// list the caller passed in is <see cref="_shared"/>.
     /// </summary>
     private readonly List<DisplayProfile> _profiles;
@@ -24,6 +25,10 @@ public class ConfigForm : Form
     private DisplayProfile? _selectedProfile;
     private bool _syncingInspector;
     private bool _isCapturingHotkey;
+    public event Action? ShortcutStateChanged;
+    public bool IsCapturingHotkey => _isCapturingHotkey;
+    public string ShortcutFor(string profileId) => _profiles.FirstOrDefault(p => p.Id == profileId)?.Hotkey ?? string.Empty;
+    private readonly System.Windows.Forms.Timer _dragTimer = new() { Interval = 40 };
 
     // Reordering by dragging a card: the card being dragged, where the press landed,
     // whether the mouse has moved far enough for it to be a drag rather than a click,
@@ -267,6 +272,8 @@ public class ConfigForm : Form
         FormClosing += ConfigForm_FormClosing;
         _undoTimer.Tick += (_, _) => UpdateUndoBar();
         _undoTimer.Start();
+        _dragTimer.Tick += (_, _) => UpdateCardDrag();
+        FormClosed += (_, _) => ShortcutStateChanged?.Invoke();
         LayoutSafety.UndoStateChanged += OnUndoStateChanged;
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
         Microsoft.Win32.SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
@@ -279,6 +286,7 @@ public class ConfigForm : Form
         {
             _undoTimer.Stop();
             _undoTimer.Dispose();
+            _dragTimer.Dispose();
             LayoutSafety.UndoStateChanged -= OnUndoStateChanged;
             Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
             Microsoft.Win32.SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
@@ -1668,6 +1676,12 @@ public class ConfigForm : Form
         using (var pen = new Pen(selected ? UiTheme.Gold : UiTheme.Line, selected ? 2f : 1f))
             g.DrawRoundedRectangle(pen, body.X, body.Y, body.Width, body.Height, S(6));
 
+        if (_dragging && _dragView == view)
+        {
+            using var marker = new Pen(UiTheme.Gold, Math.Max(3, S(4)));
+            g.DrawLine(marker, S(6), card.Height - S(5), card.Width - S(6), card.Height - S(5));
+        }
+
         // On a short window the card loses its third line rather than crushing three
         // lines into the room for two. The arrangement and the name are what let you
         // pick a layout out of the row; the shortcut is a reminder, and "LIVE" has
@@ -1733,7 +1747,7 @@ public class ConfigForm : Form
         _selectedProfile = p;
         InvalidateProfileCards();
         var view = _cardViews.FirstOrDefault(v => v.Profile.Id == p.Id);
-        if (view != null) _railStrip.ScrollIntoView(view.CardPanel);
+        if (view != null && !_dragging) _railStrip.ScrollIntoView(view.CardPanel);
         LoadSelectedProfile();
     }
     private void UpdateSelectedCardHotkey(string hotkey)
@@ -1796,6 +1810,7 @@ public class ConfigForm : Form
         LoadSelectedProfile();
         MarkClean();
         _loading = false;
+        ShortcutStateChanged?.Invoke();
     }
 
     private void UpdateInspector()
@@ -1919,6 +1934,7 @@ public class ConfigForm : Form
     {
         if (!_isCapturingHotkey) return;
         _isCapturingHotkey = false;
+        ShortcutStateChanged?.Invoke();
         _captureHotkeyBtn.Text = "Record";
         _hotkeyHint.ForeColor = UiTheme.Muted;
         _hotkeyHint.Text = CanvasHintText;
@@ -1928,6 +1944,7 @@ public class ConfigForm : Form
     private void StartHotkeyCapture()
     {
         _isCapturingHotkey = true;
+        ShortcutStateChanged?.Invoke();
         _hotkeyHint.Text = "Listening… press a key combination (Ctrl, Alt, Shift + key), Backspace to clear, or Esc to cancel";
         _hotkeyHint.ForeColor = UiTheme.Gold;
         _captureHotkeyBtn.Text = "Cancel";
@@ -1982,20 +1999,24 @@ public class ConfigForm : Form
         var owner = problem == null && _selectedProfile != null
             ? Hotkeys.OwnerOf(captured, _profiles.Where(p => p != _selectedProfile))
             : null;
-        if (problem != null || owner != null)
+        if (problem != null)
         {
             _hotkeyHint.ForeColor = UiTheme.Danger;
-            _hotkeyHint.Text = owner != null
-                ? $"{captured} is already used by '{owner.Name}'. Press another combination, or Esc to cancel."
-                : $"Can't use that — {problem}. Press another combination, or Esc to cancel.";
+            _hotkeyHint.Text = $"Can't use that ? {problem}. Press another combination, or Esc to cancel.";
             return;
         }
 
+        if (owner != null)
+        {
+            owner.Hotkey = string.Empty;
+            InvalidateProfileCards();
+        }
         SetSelectedHotkey(captured);
-        _isCapturingHotkey = false;
-        _hotkeyHint.Text = $"Captured shortcut: {captured}";
+        EndHotkeyCapture();
+        _hotkeyHint.Text = owner == null
+            ? $"Captured shortcut: {captured}. Save to keep the change."
+            : $"{captured} moved from '{owner.Name}' to '{_selectedProfile!.Name}'. Save to keep the change.";
         _hotkeyHint.ForeColor = UiTheme.Ok;
-        _captureHotkeyBtn.Text = "Record";
     }
 
     private void SetSelectedHotkey(string hotkey)
@@ -2007,6 +2028,7 @@ public class ConfigForm : Form
         _selectedProfile.Hotkey = hotkey;
         UpdateSelectedCardHotkey(hotkey);
         MarkDirty();
+        ShortcutStateChanged?.Invoke();
     }
 
     private void ClearSelectedHotkey()
@@ -2202,7 +2224,7 @@ public class ConfigForm : Form
         _cardViews.Remove(view);
         _cardViews.Insert(index, view);
         _profileCardsPanel.Controls.SetChildIndex(view.CardPanel, index);
-        _railStrip.ScrollIntoView(view.CardPanel);
+        if (!_dragging) _railStrip.ScrollIntoView(view.CardPanel);
         MarkDirty();
     }
 
@@ -2210,7 +2232,7 @@ public class ConfigForm : Form
     {
         if (e.Button != MouseButtons.Left) return;
         _dragView = view;
-        _dragStart = e.Location;
+        _dragStart = Cursor.Position;
         _dragging = false;
         _suppressCardClick = false;
     }
@@ -2227,26 +2249,43 @@ public class ConfigForm : Form
         if (!_dragging)
         {
             var slop = SystemInformation.DragSize;
-            if (Math.Abs(e.X - _dragStart.X) < slop.Width / 2 && Math.Abs(e.Y - _dragStart.Y) < slop.Height / 2) return;
+            if (Math.Abs(Cursor.Position.X - _dragStart.X) < slop.Width / 2 && Math.Abs(Cursor.Position.Y - _dragStart.Y) < slop.Height / 2) return;
 
             _dragging = true;
             view.CardPanel.Cursor = Cursors.SizeAll;
             SelectProfile(view.Profile);
+            view.CardPanel.Capture = true;
+            _dragTimer.Start();
+            view.CardPanel.Invalidate();
         }
+        UpdateCardDrag();
+    }
 
+    private void UpdateCardDrag()
+    {
+        var view = _dragView;
+        if (!_dragging || view == null) return;
+        _railStrip.ScrollAtDragEdge(Cursor.Position);
         int x = _profileCardsPanel.PointToClient(Cursor.Position).X;
         int target = _cardViews.Count(v => v != view && v.CardPanel.Left + v.CardPanel.Width / 2 < x);
         MoveProfile(view.Profile, target);
+        _feedbackLabel.ForeColor = UiTheme.Gold;
+        _feedbackLabel.Text = $"Moving '{view.Profile.Name}' to position {target + 1} of {_profiles.Count}. Release to drop.";
     }
 
     private void EndCardDrag(ProfileCardView view)
     {
         if (_dragView != view) return;
 
+        _dragTimer.Stop();
+        if (_dragging)
+            _feedbackLabel.Text = $"'{view.Profile.Name}' dropped at position {_profiles.IndexOf(view.Profile) + 1}. Save to keep the order.";
         _suppressCardClick = _dragging;
         _dragging = false;
         _dragView = null;
+        view.CardPanel.Capture = false;
         view.CardPanel.Cursor = Cursors.Hand;
+        view.CardPanel.Invalidate();
     }
 
     private void ApplySelected()
