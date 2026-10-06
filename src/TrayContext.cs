@@ -206,17 +206,20 @@ public class TrayContext : ApplicationContext
     {
         _hotkeyManager.UnregisterAll();
         _unregisteredHotkeys.Clear();
+        if (_configForm is { IsDisposed: false, IsCapturingHotkey: true }) return true;
         foreach (var profile in _profiles)
         {
             var p = profile;
-            if (p.NeedsRecapture || string.IsNullOrWhiteSpace(p.Hotkey)) continue;
+            string hotkey = _configForm is { IsDisposed: false, Visible: true }
+                ? _configForm.ShortcutFor(p.Id) : p.Hotkey;
+            if (p.NeedsRecapture || string.IsNullOrWhiteSpace(hotkey)) continue;
 
             // A shortcut that is not usable is skipped, not retried: waiting will not
             // make Caps Lock a valid hotkey, and the settings load removes it anyway.
-            if (Hotkeys.Problem(p.Hotkey) != null) continue;
+            if (Hotkeys.Problem(hotkey) != null) continue;
 
-            if (!_hotkeyManager.Register(p.Hotkey, () => SwitchToProfile(p)))
-                _unregisteredHotkeys.Add($"'{p.Name}' ({p.Hotkey})");
+            if (!_hotkeyManager.Register(hotkey, () => SwitchToProfile(p)))
+                _unregisteredHotkeys.Add($"'{p.Name}' ({hotkey})");
         }
         return _unregisteredHotkeys.Count == 0;
     }
@@ -651,6 +654,7 @@ public class TrayContext : ApplicationContext
                 RefreshHotkeys();
                 MarkProfileFileHandled();
             });
+            _configForm.ShortcutStateChanged += RefreshHotkeys;
         }
 
         _configForm.Show();

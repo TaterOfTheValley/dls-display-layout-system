@@ -179,6 +179,17 @@ internal sealed class ScrollStrip : Panel
     private void Page(int direction) =>
         GlideTo(_target + direction * Math.Max(_scale(120), ClientSize.Width - 2 * FadeWidth));
 
+    public void ScrollAtDragEdge(Point screenPoint)
+    {
+        var point = PointToClient(screenPoint);
+        if (point.Y < 0 || point.Y > Height) return;
+        int direction = point.X < ButtonWidth ? -1 : point.X > Width - ButtonWidth ? 1 : 0;
+        if (direction == 0) return;
+        _glide.Stop();
+        _target = Math.Clamp(_offset + direction * _scale(18), 0, MaxOffset);
+        Apply(_target);
+    }
+
     private void GlideTo(int offset)
     {
         _target = Math.Clamp(offset, 0, MaxOffset);
