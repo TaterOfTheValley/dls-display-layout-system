@@ -106,11 +106,6 @@ internal static class WindowFollow
 
             switch (form)
             {
-                // Places itself, and deliberately not at the centre.
-                case KeepLayoutDialog dialog:
-                    dialog.PlaceOnPrimary();
-                    continue;
-
                 // Anchored to the tray icon, and closed the moment focus moves.
                 case TrayPopup:
                     continue;

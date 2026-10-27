@@ -375,14 +375,6 @@ public class TrayContext : ApplicationContext
             Invoke = () => _ = CheckForUpdatesAsync(manual: true)
         });
 
-        entries.Add(new TrayPopup.CommandEntry
-        {
-            Text = "Confirm layout switches",
-            Checked = AppPreferences.ConfirmSwitches,
-            Detail = AppPreferences.ConfirmSwitches ? null : "undo only",
-            Invoke = ToggleConfirmSwitches
-        });
-
         var startup = StartupRegistration.Current;
         entries.Add(new TrayPopup.CommandEntry
         {
@@ -488,7 +480,7 @@ public class TrayContext : ApplicationContext
     {
         if (LayoutSafety.CanUndo)
         {
-            MessageBox.Show("Keep or revert the current display change before updating.",
+            MessageBox.Show("Wait for the current display change's Undo window to finish before updating.",
                 "DLS updates", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return false;
         }
@@ -498,18 +490,6 @@ public class TrayContext : ApplicationContext
         _updateManager.WaitExitThenApplyUpdates(release);
         ExitThread();
         return true;
-    }
-
-    private void ToggleConfirmSwitches()
-    {
-        bool wanted = !AppPreferences.ConfirmSwitches;
-        AppPreferences.ConfirmSwitches = wanted;
-        RefreshMenuAndHotkeys();
-        _notifyIcon.ShowBalloonTip(2500, AppInfo.Name,
-            wanted
-                ? $"Switches will ask you to keep the layout, and revert after {LayoutSafety.UndoSeconds}s if you don't."
-                : $"Switches apply straight away. You can still undo for {LayoutSafety.UndoSeconds}s.",
-            ToolTipIcon.Info);
     }
 
     private void ToggleStartup()
@@ -600,12 +580,6 @@ public class TrayContext : ApplicationContext
         entries.Add(new TrayPopup.CommandEntry { Text = "Check for updates\u2026", Detail = AppInfo.Version, Invoke = () => { } });
         entries.Add(new TrayPopup.CommandEntry
         {
-            Text = "Confirm layout switches",
-            Checked = AppPreferences.ConfirmSwitches,
-            Invoke = () => { }
-        });
-        entries.Add(new TrayPopup.CommandEntry
-        {
             Text = "Start with Windows",
             Checked = StartupRegistration.IsEnabled,
             Invoke = () => { }
@@ -617,11 +591,7 @@ public class TrayContext : ApplicationContext
 
     private void SwitchToProfile(DisplayProfile profile)
     {
-        // No "this will turn off X" confirmation beforehand. The switch reverts by
-        // itself unless you keep it, so a modal first asked the user to predict a
-        // consequence they are about to be shown directly — two confirmations for one
-        // action. (With confirmation turned off there is still the Undo.)
-        bool success = LayoutSafety.Apply(profile, interactive: true, out string error);
+        bool success = LayoutSafety.Apply(profile, out string error);
         if (success)
         {
             _activeProfile = profile;
