@@ -158,27 +158,14 @@ it loads the file, saves the cleaned file, and tells you which layouts lost a sh
 | `Esc` | Close (or stop recording a shortcut) |
 | Arrow keys | Nudge the selected monitor |
 
-## The confirmation prompt
+## Undoing a layout switch
 
-After a switch, a prompt appears with a 20-second countdown. **Doing nothing
-reverts to the previous layout.** You have to actively click *Keep this layout*
-for the change to stick.
+Layout switches apply immediately from the tray, hotkeys, editor and command line.
+There is no confirmation prompt or automatic reversion.
 
-That is deliberate, and it is the opposite of a normal confirmation dialog. The
-way a display switch fails is that the monitor you would click on is now black —
-so recovery has to be the thing that needs no input.
-
-It is the default, and it applies to the tray, hotkeys and the editor alike.
-
-**Prefer to switch straight through?** Untick **Confirm layout switches** in the
-tray menu. Switches then apply immediately with no prompt; you can still undo for
-20 seconds (tray menu, or `Ctrl` + `Z` in the editor), but nothing waits on you and
-nothing reverts by itself. Even then, a switch that did not come out as saved (a
-monitor that failed to turn on) still asks, because that is the case the prompt is
-for. The choice is remembered in `preferences.json` beside the settings file.
-
-The command line has no one to ask: it never prompts and nothing auto-reverts there,
-whichever way the option is set.
+You can undo the last switch for 20 seconds using **Undo last switch** in the tray
+menu or `Ctrl` + `Z` in the editor. Undo restores your screens without changing
+your draft edits.
 
 ## Resolution, refresh rate and scaling
 
@@ -310,7 +297,6 @@ The older switches below are for debugging. The app attaches to the calling cons
 | `--set-refresh <hz>` | Sets the primary display's refresh rate through the real apply path, and reports the result. |
 | `--set-scale <percent>` | Sets the primary display's scaling and reports what actually changed. |
 | `--screenshot-menu <file>` | Renders the tray menu to a PNG. Useful for checking it at your display scaling. |
-| `--screenshot-hud <file>` | Renders the post-switch confirmation overlay to a PNG. |
 | `--screenshot-update <file>` | Renders the update dialog, for a made-up release, to a PNG. Downloads nothing. |
 | `--screenshot <file>` | Opens the layout editor and saves a picture of it to a PNG. |
 | `--text-scale <percent>` | Combine with any `--screenshot` command to render at that text size (100 to 225) instead of the Windows setting. |

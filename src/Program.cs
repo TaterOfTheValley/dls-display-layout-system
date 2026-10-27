@@ -288,20 +288,6 @@ internal static class Program
         // so they stay runnable even when UI initialisation would block.
         ApplicationConfiguration.Initialize();
 
-        if (args.Length > 0 && args[0].Equals("--screenshot-hud", StringComparison.OrdinalIgnoreCase))
-        {
-            var profiles = ProfileManager.LoadProfiles();
-            var target = profiles.FirstOrDefault(p => p.Displays.Count > 0) ?? profiles.FirstOrDefault();
-            var displays = target?.Displays ?? DisplayEngine.CaptureTargets();
-            using var hud = KeepLayoutDialog.CreateForCapture(target?.Name ?? "Preview", displays, LayoutSafety.UndoSeconds);
-            using var bmp = new Bitmap(hud.Width, hud.Height);
-            using (var g = Graphics.FromImage(bmp)) hud.Render(g);
-            string outPath = args.Length > 1 ? args[1] : "hud-preview.png";
-            bmp.Save(outPath, System.Drawing.Imaging.ImageFormat.Png);
-            Console.WriteLine($"HUD preview saved to {outPath} ({hud.Width}x{hud.Height})");
-            return;
-        }
-
         if (args.Length > 0 && args[0].Equals("--screenshot-menu", StringComparison.OrdinalIgnoreCase))
         {
             // Renders the tray popup to a file. The popup is a window we draw

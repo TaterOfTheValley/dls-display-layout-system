@@ -1240,8 +1240,7 @@ public class ConfigForm : Form
         _applyBtn.Size = new Size(T(150), Hold(40, UiType.Body));
         _applyBtn.Click += (_, _) => ApplySelected();
         _tips.SetToolTip(_applyBtn,
-            "Try this layout on your screens as it is now. Unless you have turned confirmation off in " +
-            "the tray menu, it reverts by itself unless you keep it. Applying does not save your edits.");
+            "Apply this layout to your screens now. You can undo the switch for 20 seconds. Applying does not save your edits.");
 
         footer.Resize += (_, _) =>
         {
@@ -2299,22 +2298,9 @@ public class ConfigForm : Form
             return;
         }
 
-        // Two separate things can be undone in this window and they are kept apart on
-        // purpose. Save / Cancel are about the *layouts* — what is stored. Apply / Keep /
-        // Undo are about the *screens* — what Windows is doing right now. Applying does
-        // not save: an edited layout is tried on the screens first, and only what the
-        // user keeps and then saves becomes a stored layout. Applying a copy means
-        // nothing edited afterwards can change what the Keep prompt is judging.
-        //
-        // Unless the user has turned confirmation off (AppPreferences.ConfirmSwitches),
-        // this gets the keep-or-revert prompt — the "try it, then keep or revert it"
-        // step. Reverting only restores the screens; the edits stay in the editor to
-        // adjust, Save, or Cancel.
-        //
-        // No "this will turn off X" modal: the apply itself reverts unless confirmed
-        // (KeepLayoutDialog), so a blocking warning beforehand asked the user to
-        // predict a consequence they are about to be shown directly.
-        bool ok = LayoutSafety.Apply(_selectedProfile.Clone(newId: false), interactive: true, out string msg);
+        // Applying changes the screens; Save and Cancel only change the stored layouts.
+        // Undo restores the screens without discarding draft edits.
+        bool ok = LayoutSafety.Apply(_selectedProfile.Clone(newId: false), out string msg);
         _feedbackLabel.Text = msg;
         _feedbackLabel.ForeColor = ok ? UiTheme.Ok : UiTheme.Danger;
         UpdateUndoBar();
@@ -2487,7 +2473,7 @@ public class ConfigForm : Form
             _canvas.RefreshHardware();
 
             // A layout that stopped matching because the displays changed underneath
-            // it — Windows settings, a monitor unplugged, an auto-revert — is pending
+            // it — Windows settings, a monitor unplugged, a manual Undo — is pending
             // just as much as one the user edited.
             RefreshActiveBadges();
         });
@@ -2512,17 +2498,11 @@ public class ConfigForm : Form
 
     private void UpdateUndoBar()
     {
-        // The overlay already asks "keep or revert?" when confirmation is on, with its
-        // own countdown — showing this bar at the same time was the same question twice.
-        // It only needs to appear when the overlay never opened: confirmation turned
-        // off, or a non-interactive apply (the CLI).
-        bool show = LayoutSafety.CanUndo && !KeepLayoutDialog.IsOpen;
+        bool show = LayoutSafety.CanUndo;
         _undoPanel.Visible = show;
         if (show)
         {
-            _undoLabel.Text = LayoutSafety.RevertsUnlessKept
-                ? $"Reverting your screens in {LayoutSafety.RemainingSeconds}s unless you keep this layout."
-                : $"Screens switched. You can undo for {LayoutSafety.RemainingSeconds}s. Your edits are unaffected.";
+            _undoLabel.Text = $"Screens switched. You can undo for {LayoutSafety.RemainingSeconds}s. Your edits are unaffected.";
         }
     }
 
